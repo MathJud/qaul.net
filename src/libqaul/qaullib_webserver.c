@@ -116,8 +116,8 @@ void Ql_WwwEvent_handler(struct mg_connection *conn, int event, void *event_data
 			{
 				// redirect to splash page
 				mg_printf(conn, "HTTP/1.1 303 See Other\r\n"
-						  "Location: %s\r\n\r\n", "http://start.qaul/");
-				mg_printf(conn, "<a href=\"%s\">qaul.net &gt;&gt;</a>", "http://start.qaul/");
+						  "Location: %s\r\n\r\n", "http://can-you-hear-me.qaul/");
+				mg_printf(conn, "<a href=\"%s\">qaul.net &gt;&gt;</a>", "http://can-you-hear-me.qaul/");
 
 				conn->flags |= MG_F_SEND_AND_CLOSE;
 				return;
