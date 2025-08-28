@@ -315,7 +315,6 @@ class ReceiveQueue {
 enum class ReceiveQueueMessageState {
     RECEIVING,              // receiving messages
     WAITING_ON_MISSING,     // last index received and waiting for missing chunks
-    RECEIVED_MISSING_ID,    // ??? what does this mean?
     RECEIVED,               // message was received successfully, SUCCESS ACK sent
     ERROR                   // message was not received successfully, ERROR ACK sent
 }

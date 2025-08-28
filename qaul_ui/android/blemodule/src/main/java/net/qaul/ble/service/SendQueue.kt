@@ -154,20 +154,35 @@ class SendQueue(qaulId: ByteArray) {
                 currentIndex = newIndex
             }
 
-            // check state of the send queue
-            if (sendQueues.containsKey(currentIndex)) {
-                var sendQueueMessage = sendQueues[currentIndex]
-                if (sendQueueMessage != null) {
-                    if (sendQueueMessage.state == SendQueueMessageState.SUCCESS || 
-                        sendQueueMessage.state == SendQueueMessageState.ERROR) {
+            // clear this and next three queues
+            for (i in 0..3) {
+                // wrap index if necessary
+                var indexToClear = (currentIndex + i).toByte()
+                if (indexToClear > 14.toByte()) {
+                    indexToClear = 14 - indexToClear
+                }
 
-                    } else {
-                        // TODO: find better solution
-                        AppLog.e(TAG, "GattMessaging getNextMessageIndex: Message with index $currentIndex is still in state ${sendQueueMessage.state}. Cannot increment index.")
-                        return null // error
+                // clear the send queue for this index
+                if (sendQueues.containsKey(currentIndex)) {
+                    var sendQueueMessage = sendQueues[currentIndex]
+                    if (sendQueueMessage != null) {
+                        if (sendQueueMessage.state != SendQueueMessageState.SUCCESS &&
+                            sendQueueMessage.state != SendQueueMessageState.ERROR) {
+                            AppLog.e(TAG, "getNextMessageIndex: clear queue $indexToClear with message ID ${sendQueueMessage.messageId} in state ${sendQueueMessage.state}")
+
+                            // send message sending error to Libqaul
+
+
+                            // set queue to empty
+                            sendQueueMessage.state = SendQueueMessageState.EMPTY
+                            sendQueueMessage.messageId = ""
+                            sendQueueMessage.message = ByteArray(0)
+                        }
                     }
                 }
             }
+
+            // check state of the send queue
             return currentIndex
         }
     }
@@ -260,7 +275,7 @@ class SendQueue(qaulId: ByteArray) {
  * message sending state
  */
 enum class SendQueueMessageState {
-    QUEUED,
+    EMPTY,   // queue is waiting to receive new messages
     SENDING, // the message is currently being sent
     SENT,    // the message was sent
     MISSING, // some chunks are missing
