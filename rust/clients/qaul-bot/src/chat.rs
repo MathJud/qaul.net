@@ -13,6 +13,8 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::state::BotState;
+
 /// include generated protobuf RPC rust definition file
 mod proto {
     include!("../../../libqaul/src/rpc/protobuf_generated/rust/qaul.rpc.chat.rs");
@@ -32,8 +34,44 @@ pub struct ChatState {
 
 impl ChatState {
     fn new() -> Self {
+        let mut last_seen_indices = HashMap::new();
+
+        // Load persistent state from disk (only in production, not in tests)
+        #[cfg(not(test))]
+        {
+            let bot_state = BotState::load();
+
+            // Convert stored base58 group IDs back to Vec<u8>
+            for (group_id_str, count) in bot_state.message_counts {
+                match bs58::decode(&group_id_str).into_vec() {
+                    Ok(group_id_bytes) => {
+                        last_seen_indices.insert(group_id_bytes.clone(), count);
+                        log::info!("[Group: {}] Last seen message: index {}", group_id_str, count);
+                    }
+                    Err(e) => {
+                        log::warn!("[Startup] Failed to decode group ID {}: {}", group_id_str, e);
+                    }
+                }
+            }
+        }
+
         ChatState {
-            last_seen_indices: HashMap::new(),
+            last_seen_indices,
+        }
+    }
+
+    /// Save current state to disk
+    fn save_to_disk(&self) {
+        let mut bot_state = BotState::new();
+
+        // Convert Vec<u8> group IDs to base58 strings for storage
+        for (group_id_bytes, count) in &self.last_seen_indices {
+            let group_id_str = bs58::encode(group_id_bytes).into_string();
+            bot_state.update_count(group_id_str, *count);
+        }
+
+        if let Err(e) = bot_state.save() {
+            log::error!("[State] Failed to save state: {}", e);
         }
     }
 }
@@ -169,6 +207,10 @@ impl Chat {
             .entry(group_id)
             .and_modify(|e| *e = (*e).max(index))
             .or_insert(index);
+
+        // Persist state to disk after updating (skip in tests to avoid interference)
+        #[cfg(not(test))]
+        state.save_to_disk();
     }
 
     /// Process received RPC message
@@ -315,6 +357,7 @@ mod tests {
 
     #[test]
     fn test_chat_state_initialization() {
+        // In test mode, state should start empty
         let state = ChatState::new();
         assert_eq!(state.last_seen_indices.len(), 0);
     }

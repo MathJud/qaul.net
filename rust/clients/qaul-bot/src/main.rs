@@ -19,6 +19,7 @@ mod feed;
 mod user_accounts;
 mod group;
 mod chat;
+mod state;
 
 use rpc::Rpc;
 use feed::Feed;

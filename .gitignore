@@ -6,6 +6,7 @@ node.db/
 12D3KooW*/
 logs/
 version
+qaul-bot.yml
 
 # generated SBOM files
 *.cdx.json
@@ -32,3 +33,9 @@ qaul_ui/macos/*.app
 utilities/installers/macos/*.app
 utilities/installers/macos/*.dmg
 utilities/installers/macos/*.jsonsed
+
+# various
+.claude
+.claude-collective
+.cursor
+
