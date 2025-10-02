@@ -8,6 +8,7 @@
 //! - Queries and displays account information via RPC
 //! - Polls libqaul every second for incoming RPC messages
 //! - Sends a feed message every 10 seconds with current date/time
+//! - Monitors group chats and displays new messages every 1 second
 
 use futures::prelude::*;
 use futures_ticker::Ticker;
@@ -16,15 +17,20 @@ use std::{thread, time::Duration};
 mod rpc;
 mod feed;
 mod user_accounts;
+mod group;
+mod chat;
 
 use rpc::Rpc;
 use feed::Feed;
 use user_accounts::UserAccounts;
+use group::Group;
+use chat::Chat;
 
 /// Event Types of the async loop
 enum EventType {
     RpcPoll,
     SendFeedMessage,
+    PollGroupList,
 }
 
 #[async_std::main]
@@ -60,7 +66,13 @@ async fn main() {
     log::info!("Using user ID: {}", bs58::encode(&user_id_bytes).into_string());
 
     // initialize feed module
-    Feed::init(user_id_bytes);
+    Feed::init(user_id_bytes.clone());
+
+    // initialize chat module with user ID
+    Chat::init(user_id_bytes.clone());
+
+    // initialize group module with user ID
+    Group::init(user_id_bytes);
 
     // query account information via RPC
     UserAccounts::request_default_account();
@@ -71,22 +83,29 @@ async fn main() {
     // create ticker for sending feed messages every 10 seconds
     let mut feed_ticker = Ticker::new(Duration::from_secs(10));
 
+    // create ticker for polling group list every 1 second
+    let mut group_ticker = Ticker::new(Duration::from_secs(1));
+
     log::info!("qaul-bot started successfully");
     log::info!("Polling RPC every 1 second");
     log::info!("Sending feed messages every 10 seconds");
+    log::info!("Monitoring group chats every 1 second");
 
     // main event loop
     loop {
         let evt = {
             let rpc_fut = rpc_ticker.next().fuse();
             let feed_fut = feed_ticker.next().fuse();
+            let group_fut = group_ticker.next().fuse();
 
             futures::pin_mut!(rpc_fut);
             futures::pin_mut!(feed_fut);
+            futures::pin_mut!(group_fut);
 
             futures::select! {
                 _rpc_tick = rpc_fut => Some(EventType::RpcPoll),
                 _feed_tick = feed_fut => Some(EventType::SendFeedMessage),
+                _group_tick = group_fut => Some(EventType::PollGroupList),
             }
         };
 
@@ -104,6 +123,10 @@ async fn main() {
                 EventType::SendFeedMessage => {
                     // send feed message with current date/time
                     Feed::send_timestamp_message();
+                }
+                EventType::PollGroupList => {
+                    // request group list to check for new messages
+                    Group::request_group_list();
                 }
             }
         }

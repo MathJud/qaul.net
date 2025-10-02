@@ -37,7 +37,7 @@ impl Rpc {
                         log::info!("Router module message received");
                     }
                     Ok(proto::Modules::Chat) => {
-                        log::info!("Chat module message received");
+                        super::chat::Chat::rpc(message.data);
                     }
                     Ok(proto::Modules::Connections) => {
                         log::info!("Connections module message received");
@@ -52,7 +52,7 @@ impl Rpc {
                         log::info!("ChatFile module message received");
                     }
                     Ok(proto::Modules::Group) => {
-                        log::info!("Group module message received");
+                        super::group::Group::rpc(message.data);
                     }
                     Ok(proto::Modules::Rtc) => {
                         log::info!("RTC module message received");
