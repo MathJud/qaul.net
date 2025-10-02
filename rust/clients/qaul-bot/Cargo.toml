@@ -1,0 +1,21 @@
+[package]
+name = "qaul-bot"
+version = "2.0.0-rc.4"
+authors = ["qaul community <contact@qaul.net>"]
+edition = "2021"
+description = "qaul bot client"
+license = "AGPL-3.0"
+homepage = "https://qaul.net"
+repository = "https://github.com/qaul/qaul.net"
+
+[dependencies]
+libqaul = { path = "../../libqaul" }
+async-std = { version = "1.13", features = ["attributes"] }
+futures = "0.3"
+log = "0.4"
+pretty_env_logger = "0.5"
+prost = "0.14"
+futures-ticker = "0.0.3"
+chrono = "0.4"
+state = "0.6"
+bs58 = "0.5"
