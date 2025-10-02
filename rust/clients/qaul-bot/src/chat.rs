@@ -52,6 +52,56 @@ impl Chat {
         USER_ID.set(user_id).ok();
     }
 
+    /// Send a chat message to a group/conversation
+    ///
+    /// This constructs and sends a chat message via RPC to the specified group.
+    pub fn send_message(group_id: Vec<u8>, message_text: String) {
+        let user_id = USER_ID.get().cloned().unwrap_or_default();
+
+        // Create chat send message
+        let proto_message = proto::Chat {
+            message: Some(proto::chat::Message::Send(proto::ChatMessageSend {
+                group_id: group_id.clone(),
+                content: message_text,
+            })),
+        };
+
+        // Encode message
+        let mut buf = Vec::with_capacity(proto_message.encoded_len());
+        proto_message
+            .encode(&mut buf)
+            .expect("Vec<u8> provides capacity as needed");
+
+        // Wrap in RPC container
+        let proto_rpc_message = super::rpc::proto::QaulRpc {
+            module: super::rpc::proto::Modules::Chat as i32,
+            request_id: String::new(),
+            user_id,
+            data: buf,
+        };
+
+        // Encode RPC message
+        let mut rpc_buf = Vec::with_capacity(proto_rpc_message.encoded_len());
+        proto_rpc_message
+            .encode(&mut rpc_buf)
+            .expect("Vec<u8> provides capacity as needed");
+
+        // Send via libqaul API
+        libqaul::api::send_rpc(rpc_buf);
+
+        log::info!(
+            "[Bot] Sent message to group {}",
+            if group_id.len() == 16 {
+                match uuid::Uuid::from_slice(&group_id) {
+                    Ok(uuid) => uuid.to_string(),
+                    Err(_) => bs58::encode(&group_id).into_string(),
+                }
+            } else {
+                bs58::encode(&group_id).into_string()
+            }
+        );
+    }
+
     /// Request chat conversation for a group
     ///
     /// Requests messages from the last seen index onwards.
@@ -174,7 +224,10 @@ impl Chat {
             bs58::encode(&group_id).into_string()
         };
 
-        // Display new messages
+        // Get bot's user ID for comparison
+        let bot_user_id = USER_ID.get().cloned().unwrap_or_default();
+
+        // Display new messages and send auto-replies
         for message in &new_messages {
             let content = Self::extract_message_content(&message.content);
             let sender_id = bs58::encode(&message.sender_id).into_string();
@@ -185,11 +238,38 @@ impl Chat {
                 sender_id,
                 content
             );
+
+            // Send auto-reply only if message is not from the bot itself
+            if message.sender_id != bot_user_id {
+                // Only auto-reply to actual chat messages, not system events
+                if Self::is_user_message(&message.content) {
+                    log::info!(
+                        "[Bot] Sending auto-reply to group {}",
+                        group_id_str
+                    );
+                    Self::send_message(
+                        group_id.clone(),
+                        "thanks for this message, we will process it".to_string(),
+                    );
+                }
+            }
         }
 
         // Update last seen index to the highest message index received
         if let Some(last_message) = new_messages.last() {
             Self::update_last_seen_index(group_id, last_message.index);
+        }
+    }
+
+    /// Check if message content is a user chat message (not system event or file)
+    fn is_user_message(content: &[u8]) -> bool {
+        if let Ok(content_message) = proto::ChatContentMessage::decode(content) {
+            matches!(
+                content_message.message,
+                Some(proto::chat_content_message::Message::ChatContent(_))
+            )
+        } else {
+            false
         }
     }
 
