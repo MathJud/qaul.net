@@ -28,7 +28,7 @@ impl Rpc {
                         log::info!("Node module message received");
                     }
                     Ok(proto::Modules::Useraccounts) => {
-                        log::info!("UserAccounts module message received");
+                        super::user_accounts::UserAccounts::rpc(message.data);
                     }
                     Ok(proto::Modules::Users) => {
                         log::info!("Users module message received");

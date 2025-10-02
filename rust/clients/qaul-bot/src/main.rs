@@ -5,6 +5,7 @@
 //!
 //! This bot automatically:
 //! - Creates a default user "beacon-bot" on first startup
+//! - Queries and displays account information via RPC
 //! - Polls libqaul every second for incoming RPC messages
 //! - Sends a feed message every 10 seconds with current date/time
 
@@ -14,9 +15,11 @@ use std::{thread, time::Duration};
 
 mod rpc;
 mod feed;
+mod user_accounts;
 
 use rpc::Rpc;
 use feed::Feed;
+use user_accounts::UserAccounts;
 
 /// Event Types of the async loop
 enum EventType {
@@ -58,6 +61,9 @@ async fn main() {
 
     // initialize feed module
     Feed::init(user_id_bytes);
+
+    // query account information via RPC
+    UserAccounts::request_default_account();
 
     // create ticker for polling RPC every 1 second
     let mut rpc_ticker = Ticker::new(Duration::from_secs(1));
