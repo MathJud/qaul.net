@@ -5,7 +5,105 @@
 //!
 //! Test suite for Nostr protocol integration with qaul-bot
 
-use qaul_bot::nostr_bridge::{NostrBridge, NostrKeys};
+use qaul_bot::nostr_bridge::{NostrBridge, NostrKeys, NostrIncomingMessage};
+
+// === PHASE 1: RED - Incoming Message Tests ===
+
+#[test]
+fn test_parse_incoming_nostr_json() {
+    // Test 1: Parse valid JSON from Nostr DM
+    let json_payload = r#"{
+        "chat_group": "2Wh8S2wHa1m",
+        "message_text": "Reply from Nostr user"
+    }"#;
+
+    let parsed = NostrIncomingMessage::from_json(json_payload).unwrap();
+    assert_eq!(parsed.chat_group, "2Wh8S2wHa1m");
+    assert_eq!(parsed.message_text, "Reply from Nostr user");
+}
+
+#[test]
+fn test_parse_incoming_json_with_extra_fields() {
+    // Test 2: JSON should ignore extra fields
+    let json_payload = r#"{
+        "chat_group": "ABC123xyz",
+        "message_text": "Test message",
+        "extra_field": "should be ignored",
+        "timestamp": 1234567890
+    }"#;
+
+    let parsed = NostrIncomingMessage::from_json(json_payload).unwrap();
+    assert_eq!(parsed.chat_group, "ABC123xyz");
+    assert_eq!(parsed.message_text, "Test message");
+}
+
+#[test]
+fn test_parse_incoming_json_missing_required_field() {
+    // Test 3: Should fail if required field missing
+    let json_payload = r#"{
+        "chat_group": "ABC123xyz"
+    }"#;
+
+    let result = NostrIncomingMessage::from_json(json_payload);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_decode_base58_group_id() {
+    // Test 4: Decode base58 group ID to binary
+    // Use a real 16-byte UUID encoded as base58
+    let uuid_bytes = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    let group_id_base58 = bs58::encode(&uuid_bytes).into_string();
+
+    let decoded = NostrIncomingMessage::decode_group_id(&group_id_base58).unwrap();
+    assert!(!decoded.is_empty());
+
+    // Verify it decodes back to the original bytes
+    assert_eq!(decoded, uuid_bytes);
+}
+
+#[test]
+fn test_decode_invalid_base58() {
+    // Test 5: Should fail on invalid base58
+    let invalid_base58 = "!!!invalid!!!";
+
+    let result = NostrIncomingMessage::decode_group_id(invalid_base58);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_complete_incoming_message_flow() {
+    // Test 6: Complete flow from JSON to group ID bytes
+    let json_payload = r#"{
+        "chat_group": "5HpnLkrF5xxTihbtBemjy6PzhL",
+        "message_text": "Hello from Nostr!"
+    }"#;
+
+    // Parse JSON
+    let msg = NostrIncomingMessage::from_json(json_payload).unwrap();
+    assert_eq!(msg.chat_group, "5HpnLkrF5xxTihbtBemjy6PzhL");
+    assert_eq!(msg.message_text, "Hello from Nostr!");
+
+    // Decode group ID
+    let group_id_bytes = msg.group_id_bytes().unwrap();
+    assert!(!group_id_bytes.is_empty());
+
+    // Verify it can be re-encoded
+    let re_encoded = bs58::encode(&group_id_bytes).into_string();
+    assert_eq!(re_encoded, msg.chat_group);
+}
+
+#[test]
+fn test_nostr_incoming_message_struct() {
+    // Test 7: Verify struct fields are accessible
+    let msg = NostrIncomingMessage {
+        chat_group: "ABC123".to_string(),
+        message_text: "Test message".to_string(),
+    };
+
+    assert_eq!(msg.chat_group, "ABC123");
+    assert_eq!(msg.message_text, "Test message");
+}
 
 #[test]
 fn test_nostr_key_generation() {

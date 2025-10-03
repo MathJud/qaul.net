@@ -3,15 +3,75 @@
 
 //! # Nostr Bridge Module
 //!
-//! This module handles:
+//! This module provides bidirectional message bridging between qaul and Nostr networks:
+//!
+//! ## Features
+//!
+//! ### Outgoing (qaul → Nostr)
 //! - Nostr keypair generation and management
-//! - NIP-04 encrypted message forwarding
+//! - NIP-04 encrypted message forwarding to target recipients
 //! - Relay connection management
-//! - Message formatting from qaul to Nostr
+//! - JSON message formatting with full metadata
+//!
+//! ### Incoming (Nostr → qaul)
+//! - Subscribe to encrypted DMs on Nostr relays
+//! - Poll for new messages every 1 second
+//! - Decrypt NIP-04 encrypted messages
+//! - Parse JSON payloads with group routing information
+//! - Forward messages to specific qaul groups
+//!
+//! ## Expected JSON Format
+//!
+//! ### Incoming Messages (Nostr → qaul)
+//! ```json
+//! {
+//!   "chat_group": "5HpnLkrF5xxTihbtBemjy6PzhL",  // Base58 encoded group ID
+//!   "message_text": "Reply from Nostr user"
+//! }
+//! ```
+//!
+//! ### Outgoing Messages (qaul → Nostr)
+//! ```json
+//! {
+//!   "user_name": "alice",
+//!   "qaul_id": "5Z9Kni2tixYKT",
+//!   "chat_group": "7BcDef3uvwXYZ",
+//!   "message_id": "abc123",
+//!   "sent_time": "2025-10-03T14:23:45Z",
+//!   "message_text": "Hello from qaul!"
+//! }
+//! ```
 
 use crate::state::NostrKeyInfo;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// JSON payload structure for incoming Nostr messages to qaul
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NostrIncomingMessage {
+    pub chat_group: String,    // Base58 encoded group ID
+    pub message_text: String,
+}
+
+impl NostrIncomingMessage {
+    /// Parse JSON from decrypted Nostr DM
+    pub fn from_json(json_str: &str) -> Result<Self, String> {
+        serde_json::from_str(json_str)
+            .map_err(|e| format!("Failed to parse incoming message JSON: {}", e))
+    }
+
+    /// Decode base58 group ID to binary
+    pub fn decode_group_id(group_id_base58: &str) -> Result<Vec<u8>, String> {
+        bs58::decode(group_id_base58)
+            .into_vec()
+            .map_err(|e| format!("Failed to decode base58 group ID: {}", e))
+    }
+
+    /// Get decoded group ID as binary
+    pub fn group_id_bytes(&self) -> Result<Vec<u8>, String> {
+        Self::decode_group_id(&self.chat_group)
+    }
+}
 
 /// JSON payload structure for qaul messages forwarded to Nostr
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -185,6 +245,7 @@ pub struct NostrBridge {
     client: Client,
     keys: Keys,
     target_pubkey: PublicKey,
+    last_seen_timestamp: std::sync::Arc<std::sync::RwLock<u64>>,
 }
 
 impl NostrBridge {
@@ -218,7 +279,87 @@ impl NostrBridge {
             client,
             keys,
             target_pubkey,
+            last_seen_timestamp: std::sync::Arc::new(std::sync::RwLock::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )),
         })
+    }
+
+    /// Start listening for incoming encrypted DMs
+    pub async fn start_listening(&self) -> Result<(), String> {
+        // Subscribe to encrypted DMs sent to our public key
+        let my_pubkey = self.keys.public_key();
+
+        // Create filter for encrypted DMs to us
+        let filter = Filter::new()
+            .kind(Kind::EncryptedDirectMessage)
+            .pubkey(my_pubkey);
+
+        self.client
+            .subscribe(filter, None)
+            .await
+            .map_err(|e| format!("Failed to subscribe to DMs: {}", e))?;
+
+        log::info!("[Nostr] Subscribed to incoming encrypted DMs");
+        Ok(())
+    }
+
+    /// Check for new incoming messages and return parsed messages
+    pub async fn check_for_messages(&self) -> Result<Vec<NostrIncomingMessage>, String> {
+        let mut messages = Vec::new();
+
+        // Get current timestamp for filtering
+        let last_seen = {
+            let lock = self.last_seen_timestamp.read().unwrap();
+            *lock
+        };
+
+        // Get notifications from relays
+        let mut notifications = self.client.notifications();
+
+        // Process incoming events (non-blocking)
+        while let Ok(notification) = notifications.try_recv() {
+            if let RelayPoolNotification::Event { event, .. } = notification {
+                // Only process DMs sent to us after last seen timestamp
+                if event.kind == Kind::EncryptedDirectMessage
+                    && event.created_at.as_u64() > last_seen {
+
+                    // Decrypt the message
+                    match nip04::decrypt(&self.keys.secret_key(), &event.pubkey, &event.content) {
+                        Ok(decrypted_content) => {
+                            log::info!("[Nostr] Received encrypted DM, decrypting...");
+
+                            // Parse JSON payload
+                            match NostrIncomingMessage::from_json(&decrypted_content) {
+                                Ok(msg) => {
+                                    log::info!(
+                                        "[Nostr] Parsed incoming message for group: {}",
+                                        msg.chat_group
+                                    );
+                                    messages.push(msg);
+                                }
+                                Err(e) => {
+                                    log::error!("[Nostr] Failed to parse message JSON: {}", e);
+                                    log::debug!("[Nostr] Decrypted content: {}", decrypted_content);
+                                }
+                            }
+
+                            // Update last seen timestamp
+                            let mut lock = self.last_seen_timestamp.write().unwrap();
+                            *lock = event.created_at.as_u64();
+                        }
+                        Err(e) => {
+                            log::error!("[Nostr] Failed to decrypt message: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(messages)
     }
 
     /// Format qaul message for Nostr relay (legacy plain text format)

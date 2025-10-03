@@ -51,18 +51,24 @@ impl ChatState {
                 match bs58::decode(&group_id_str).into_vec() {
                     Ok(group_id_bytes) => {
                         last_seen_indices.insert(group_id_bytes.clone(), count);
-                        log::info!("[Group: {}] Last seen message: index {}", group_id_str, count);
+                        log::info!(
+                            "[Group: {}] Last seen message: index {}",
+                            group_id_str,
+                            count
+                        );
                     }
                     Err(e) => {
-                        log::warn!("[Startup] Failed to decode group ID {}: {}", group_id_str, e);
+                        log::warn!(
+                            "[Startup] Failed to decode group ID {}: {}",
+                            group_id_str,
+                            e
+                        );
                     }
                 }
             }
         }
 
-        ChatState {
-            last_seen_indices,
-        }
+        ChatState { last_seen_indices }
     }
 
     /// Save current state to disk
@@ -100,6 +106,22 @@ impl Chat {
         let _ = &*CHAT_STATE;
         // Store user ID for RPC requests
         USER_ID.set(user_id).ok();
+    }
+
+    /// Send a chat message to a group using base58-encoded group ID
+    ///
+    /// This is a convenience wrapper for sending messages from Nostr to qaul groups.
+    pub fn send_message_to_group(
+        group_id_base58: &str,
+        message_text: String,
+    ) -> Result<(), String> {
+        // Decode base58 group ID to binary
+        let group_id = bs58::decode(group_id_base58)
+            .into_vec()
+            .map_err(|e| format!("Failed to decode group ID: {}", e))?;
+
+        Self::send_message(group_id, message_text);
+        Ok(())
     }
 
     /// Send a chat message to a group/conversation
@@ -231,16 +253,14 @@ impl Chat {
     /// of the chat module and displays only NEW messages.
     pub fn rpc(data: Vec<u8>) {
         match proto::Chat::decode(&data[..]) {
-            Ok(chat) => {
-                match chat.message {
-                    Some(proto::chat::Message::ConversationList(proto_conversation)) => {
-                        Self::handle_conversation_response(proto_conversation);
-                    }
-                    _ => {
-                        log::debug!("Unprocessable RPC chat message type");
-                    }
+            Ok(chat) => match chat.message {
+                Some(proto::chat::Message::ConversationList(proto_conversation)) => {
+                    Self::handle_conversation_response(proto_conversation);
                 }
-            }
+                _ => {
+                    log::debug!("Unprocessable RPC chat message type");
+                }
+            },
             Err(error) => {
                 log::error!("Failed to decode chat RPC message: {:?}", error);
             }
@@ -328,7 +348,9 @@ impl Chat {
                                 .await
                             {
                                 Ok(_) => {
-                                    log::info!("[Nostr] Successfully forwarded JSON message to Nostr");
+                                    log::info!(
+                                        "[Nostr] Successfully forwarded JSON message to Nostr"
+                                    );
                                 }
                                 Err(e) => {
                                     log::error!("[Nostr] Failed to forward message: {}", e);
@@ -339,6 +361,7 @@ impl Chat {
                 });
             }
 
+            /*
             // Send auto-reply only if message is not from the bot itself
             if message.sender_id != bot_user_id {
                 // Only auto-reply to actual chat messages, not system events
@@ -353,6 +376,7 @@ impl Chat {
                     );
                 }
             }
+            */
         }
 
         // Update last seen index to the highest message index received
@@ -396,7 +420,10 @@ impl Chat {
     fn format_group_event(event: proto::GroupEvent) -> String {
         match proto::GroupEventType::try_from(event.event_type) {
             Ok(proto::GroupEventType::Joined) => {
-                format!("[User joined: {}]", bs58::encode(event.user_id).into_string())
+                format!(
+                    "[User joined: {}]",
+                    bs58::encode(event.user_id).into_string()
+                )
             }
             Ok(proto::GroupEventType::Left) => {
                 format!("[User left: {}]", bs58::encode(event.user_id).into_string())
@@ -423,7 +450,7 @@ mod tests {
     #[test]
     fn test_get_last_seen_index_none() {
         Chat::init(vec![1, 2, 3, 4]); // Dummy user ID for test
-        // Use a unique group_id to avoid test interference
+                                      // Use a unique group_id to avoid test interference
         let group_id = vec![255, 1, 0, 0];
         assert_eq!(Chat::get_last_seen_index(&group_id), None);
     }
@@ -431,7 +458,7 @@ mod tests {
     #[test]
     fn test_update_last_seen_index() {
         Chat::init(vec![1, 2, 3, 4]); // Dummy user ID for test
-        // Use a unique group_id to avoid test interference
+                                      // Use a unique group_id to avoid test interference
         let group_id = vec![255, 2, 0, 0];
 
         Chat::update_last_seen_index(group_id.clone(), 5);
@@ -445,7 +472,7 @@ mod tests {
     #[test]
     fn test_update_last_seen_index_not_decreasing() {
         Chat::init(vec![1, 2, 3, 4]); // Dummy user ID for test
-        // Use a unique group_id to avoid test interference
+                                      // Use a unique group_id to avoid test interference
         let group_id = vec![255, 3, 0, 0];
 
         Chat::update_last_seen_index(group_id.clone(), 10);
@@ -459,7 +486,7 @@ mod tests {
     #[test]
     fn test_multiple_conversations() {
         Chat::init(vec![1, 2, 3, 4]); // Dummy user ID for test
-        // Use unique group_ids to avoid test interference
+                                      // Use unique group_ids to avoid test interference
         let group_id_1 = vec![255, 4, 0, 0];
         let group_id_2 = vec![255, 5, 0, 0];
 

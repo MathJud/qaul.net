@@ -35,6 +35,7 @@ enum EventType {
     RpcPoll,
     SendFeedMessage,
     PollGroupList,
+    PollNostrMessages,
 }
 
 #[async_std::main]
@@ -87,6 +88,11 @@ async fn main() {
         log::info!("[Nostr] Bridge initialized successfully");
         // Store bridge in global state for use by Chat module
         chat::set_nostr_bridge(bridge.clone()).await;
+
+        // Start listening for incoming DMs
+        if let Err(e) = bridge.start_listening().await {
+            log::error!("[Nostr] Failed to start listening: {}", e);
+        }
     } else {
         log::warn!("[Nostr] Failed to initialize bridge - continuing without Nostr integration");
     }
@@ -103,10 +109,14 @@ async fn main() {
     // create ticker for polling group list every 1 second
     let mut group_ticker = Ticker::new(Duration::from_millis(500));
 
+    // create ticker for polling Nostr messages every 1 second
+    let mut nostr_ticker = Ticker::new(Duration::from_secs(1));
+
     log::info!("qaul-bot started successfully");
     log::info!("Polling RPC every 1 second");
     log::info!("Sending feed messages every 10 seconds");
     log::info!("Monitoring group chats every 1 second");
+    log::info!("Polling Nostr messages every 1 second");
 
     // main event loop
     loop {
@@ -114,15 +124,18 @@ async fn main() {
             let rpc_fut = rpc_ticker.next().fuse();
             let feed_fut = feed_ticker.next().fuse();
             let group_fut = group_ticker.next().fuse();
+            let nostr_fut = nostr_ticker.next().fuse();
 
             futures::pin_mut!(rpc_fut);
             futures::pin_mut!(feed_fut);
             futures::pin_mut!(group_fut);
+            futures::pin_mut!(nostr_fut);
 
             futures::select! {
                 _rpc_tick = rpc_fut => Some(EventType::RpcPoll),
                 _feed_tick = feed_fut => Some(EventType::SendFeedMessage),
                 _group_tick = group_fut => Some(EventType::PollGroupList),
+                _nostr_tick = nostr_fut => Some(EventType::PollNostrMessages),
             }
         };
 
@@ -144,6 +157,43 @@ async fn main() {
                 EventType::PollGroupList => {
                     // request group list to check for new messages
                     Group::request_group_list();
+                }
+                EventType::PollNostrMessages => {
+                    // poll for Nostr messages and forward to qaul
+                    if let Some(ref bridge) = nostr_bridge {
+                        let bridge_clone = bridge.clone();
+                        async_std::task::spawn(async move {
+                            match bridge_clone.check_for_messages().await {
+                                Ok(messages) => {
+                                    for msg in messages {
+                                        log::info!(
+                                            "[Nostr→qaul] Forwarding message to group: {}",
+                                            msg.chat_group
+                                        );
+
+                                        // Send message to qaul group
+                                        if let Err(e) = Chat::send_message_to_group(
+                                            &msg.chat_group,
+                                            msg.message_text.clone(),
+                                        ) {
+                                            log::error!(
+                                                "[Nostr→qaul] Failed to send message: {}",
+                                                e
+                                            );
+                                        } else {
+                                            log::info!(
+                                                "[Nostr→qaul] Successfully forwarded: {}",
+                                                msg.message_text
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::debug!("[Nostr] No new messages: {}", e);
+                                }
+                            }
+                        });
+                    }
                 }
             }
         }
