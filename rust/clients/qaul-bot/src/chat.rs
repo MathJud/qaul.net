@@ -309,6 +309,7 @@ impl Chat {
             if Self::is_user_message(&message.content) {
                 let group_id_copy = group_id.clone();
                 let sender_id_copy = message.sender_id.clone();
+                let message_id_copy = message.message_id.clone();
                 let content_copy = content.clone();
                 let timestamp = message.sent_at;
 
@@ -317,16 +318,17 @@ impl Chat {
                     if let Some(bridge_lock) = NOSTR_BRIDGE.get() {
                         if let Some(bridge) = bridge_lock.read().await.as_ref() {
                             match bridge
-                                .forward_qaul_message(
+                                .forward_qaul_message_json(
                                     &sender_id_copy,
                                     &group_id_copy,
+                                    &message_id_copy,
                                     &content_copy,
                                     timestamp,
                                 )
                                 .await
                             {
                                 Ok(_) => {
-                                    log::info!("[Nostr] Successfully forwarded message to Nostr");
+                                    log::info!("[Nostr] Successfully forwarded JSON message to Nostr");
                                 }
                                 Err(e) => {
                                     log::error!("[Nostr] Failed to forward message: {}", e);

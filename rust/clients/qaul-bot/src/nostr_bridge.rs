@@ -13,6 +13,52 @@ use crate::state::NostrKeyInfo;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// JSON payload structure for qaul messages forwarded to Nostr
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QaulMessagePayload {
+    pub user_name: String,
+    pub qaul_id: String,       // Base58 encoded sender ID
+    pub chat_group: String,    // Base58 encoded group ID
+    pub message_id: String,    // Base58 encoded message ID
+    pub sent_time: String,     // ISO 8601 timestamp
+    pub message_text: String,
+}
+
+impl QaulMessagePayload {
+    /// Create a new QaulMessagePayload from raw message data
+    pub fn new(
+        user_name: &str,
+        sender_id: &[u8],
+        group_id: &[u8],
+        message_id: &[u8],
+        timestamp: u64,
+        message_text: &str,
+    ) -> Self {
+        QaulMessagePayload {
+            user_name: user_name.to_string(),
+            qaul_id: bs58::encode(sender_id).into_string(),
+            chat_group: bs58::encode(group_id).into_string(),
+            message_id: bs58::encode(message_id).into_string(),
+            sent_time: Self::format_timestamp(timestamp),
+            message_text: message_text.to_string(),
+        }
+    }
+
+    /// Convert timestamp to ISO 8601 format
+    pub fn format_timestamp(timestamp: u64) -> String {
+        use chrono::SecondsFormat;
+
+        chrono::DateTime::from_timestamp(timestamp as i64, 0)
+            .map(|dt| dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+
+    /// Serialize payload to JSON string
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+}
+
 /// Nostr key wrapper for secp256k1 keys
 pub struct NostrKeys {
     keys: Keys,
@@ -175,7 +221,7 @@ impl NostrBridge {
         })
     }
 
-    /// Format qaul message for Nostr relay
+    /// Format qaul message for Nostr relay (legacy plain text format)
     pub fn format_message(
         sender_id: &[u8],
         group_id: &[u8],
@@ -194,6 +240,31 @@ impl NostrBridge {
             "[qaul] Message received\nFrom: {}\nGroup: {}\nTime: {}\n\n{}",
             sender_base58, group_base58, datetime, content
         )
+    }
+
+    /// Format qaul message as JSON for Nostr relay (new format with metadata)
+    pub fn format_message_json(
+        user_name: &str,
+        sender_id: &[u8],
+        group_id: &[u8],
+        message_id: &[u8],
+        content: &str,
+        timestamp: u64,
+    ) -> String {
+        let payload = QaulMessagePayload::new(
+            user_name,
+            sender_id,
+            group_id,
+            message_id,
+            timestamp,
+            content,
+        );
+
+        payload.to_json().unwrap_or_else(|e| {
+            log::error!("[Nostr] Failed to serialize message to JSON: {}", e);
+            // Fallback to plain text format
+            Self::format_message(sender_id, group_id, content, timestamp)
+        })
     }
 
     /// Send encrypted DM to target recipient using NIP-04
@@ -222,7 +293,7 @@ impl NostrBridge {
         Ok(())
     }
 
-    /// Forward qaul message to Nostr network
+    /// Forward qaul message to Nostr network (legacy plain text format)
     pub async fn forward_qaul_message(
         &self,
         sender_id: &[u8],
@@ -232,6 +303,30 @@ impl NostrBridge {
     ) -> Result<(), String> {
         let formatted_message = Self::format_message(sender_id, group_id, content, timestamp);
         self.send_encrypted_dm(&formatted_message).await
+    }
+
+    /// Forward qaul message to Nostr network as JSON with full metadata
+    pub async fn forward_qaul_message_json(
+        &self,
+        sender_id: &[u8],
+        group_id: &[u8],
+        message_id: &[u8],
+        content: &str,
+        timestamp: u64,
+    ) -> Result<(), String> {
+        // Use sender_id as user_name fallback (in production, this should come from Users module)
+        let user_name = bs58::encode(sender_id).into_string();
+
+        let json_message = Self::format_message_json(
+            &user_name,
+            sender_id,
+            group_id,
+            message_id,
+            content,
+            timestamp,
+        );
+
+        self.send_encrypted_dm(&json_message).await
     }
 }
 
@@ -330,5 +425,129 @@ mod tests {
 
         assert!(nsec.starts_with("nsec1"));
         assert!(nsec.len() > 20);
+    }
+
+    // === NEW TESTS FOR JSON MESSAGE PAYLOAD ===
+
+    #[test]
+    fn test_qaul_message_payload_serialization() {
+        let payload = QaulMessagePayload {
+            user_name: "alice".to_string(),
+            qaul_id: "5Z9Kni2tixYKT".to_string(),
+            chat_group: "7BcDef3uvwXYZ".to_string(),
+            message_id: "abc123".to_string(),
+            sent_time: "2025-10-03T14:23:45Z".to_string(),
+            message_text: "Hello from qaul!".to_string(),
+        };
+
+        let json = payload.to_json().unwrap();
+
+        // Verify JSON contains all required fields
+        assert!(json.contains("user_name"));
+        assert!(json.contains("alice"));
+        assert!(json.contains("qaul_id"));
+        assert!(json.contains("chat_group"));
+        assert!(json.contains("message_id"));
+        assert!(json.contains("sent_time"));
+        assert!(json.contains("message_text"));
+        assert!(json.contains("Hello from qaul!"));
+
+        // Verify it's valid JSON by deserializing
+        let parsed: QaulMessagePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.user_name, "alice");
+        assert_eq!(parsed.message_text, "Hello from qaul!");
+    }
+
+    #[test]
+    fn test_qaul_message_payload_all_fields_present() {
+        let payload = QaulMessagePayload::new(
+            "bob",
+            &vec![1, 2, 3, 4],
+            &vec![5, 6, 7, 8],
+            &vec![9, 10, 11, 12],
+            1727964225,
+            "Test message"
+        );
+
+        // Verify all 6 required fields are populated
+        assert!(!payload.user_name.is_empty());
+        assert!(!payload.qaul_id.is_empty());
+        assert!(!payload.chat_group.is_empty());
+        assert!(!payload.message_id.is_empty());
+        assert!(!payload.sent_time.is_empty());
+        assert_eq!(payload.message_text, "Test message");
+    }
+
+    #[test]
+    fn test_json_message_formatting() {
+        let sender = vec![1, 2, 3, 4];
+        let group = vec![5, 6, 7, 8];
+        let message_id = vec![9, 10, 11, 12];
+        let content = "Hello Nostr!";
+        let timestamp = 1727964225;
+
+        let json_message = NostrBridge::format_message_json(
+            "alice",
+            &sender,
+            &group,
+            &message_id,
+            content,
+            timestamp
+        );
+
+        // Verify it's valid JSON
+        let parsed: serde_json::Value = serde_json::from_str(&json_message).unwrap();
+        assert_eq!(parsed["user_name"].as_str().unwrap(), "alice");
+        assert_eq!(parsed["message_text"].as_str().unwrap(), "Hello Nostr!");
+        assert!(parsed["qaul_id"].as_str().unwrap().len() > 0);
+        assert!(parsed["chat_group"].as_str().unwrap().len() > 0);
+        assert!(parsed["message_id"].as_str().unwrap().len() > 0);
+        assert!(parsed["sent_time"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_timestamp_formatting_iso8601() {
+        let timestamp = 1727964225; // 2024-10-03 14:23:45 UTC
+        let formatted = QaulMessagePayload::format_timestamp(timestamp);
+
+        // Verify ISO 8601 format
+        assert!(formatted.ends_with("Z"));
+        assert!(formatted.contains("T"));
+        assert!(formatted.contains("-"));
+        assert!(formatted.contains(":"));
+    }
+
+    #[test]
+    fn test_complete_json_message_example() {
+        // This test demonstrates the complete JSON message format
+        let sender_id = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let group_id = vec![9, 10, 11, 12, 13, 14, 15, 16];
+        let message_id = vec![17, 18, 19, 20, 21, 22, 23, 24];
+        let content = "Hello from qaul network!";
+        let timestamp = 1727964225; // 2024-10-03 14:03:45 UTC
+
+        let json_message = NostrBridge::format_message_json(
+            "alice",
+            &sender_id,
+            &group_id,
+            &message_id,
+            content,
+            timestamp,
+        );
+
+        // Parse and verify the complete JSON structure
+        let parsed: serde_json::Value = serde_json::from_str(&json_message).unwrap();
+
+        // Verify all required fields are present
+        assert_eq!(parsed["user_name"].as_str().unwrap(), "alice");
+        assert!(parsed["qaul_id"].as_str().unwrap().len() > 0);
+        assert!(parsed["chat_group"].as_str().unwrap().len() > 0);
+        assert!(parsed["message_id"].as_str().unwrap().len() > 0);
+        assert_eq!(parsed["sent_time"].as_str().unwrap(), "2024-10-03T14:03:45Z");
+        assert_eq!(parsed["message_text"].as_str().unwrap(), "Hello from qaul network!");
+
+        // Print example for documentation
+        println!("\nExample JSON message format:");
+        println!("{}", json_message);
     }
 }
