@@ -15,11 +15,31 @@ use std::path::PathBuf;
 
 const STATE_FILE: &str = "qaul-bot.yml";
 
+/// Nostr key information with all formats for persistence
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NostrKeyInfo {
+    /// Private key in hex format (64 chars)
+    pub private_key_hex: String,
+    /// Public key in hex format (64 chars)
+    pub public_key_hex: String,
+    /// Bech32-encoded public key (npub1...)
+    pub npub: String,
+    /// Bech32-encoded private key (nsec1...)
+    pub nsec: String,
+}
+
 /// Bot state structure for serialization
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BotState {
     /// Map of group_id (as base58 string) -> last_message_index
     pub message_counts: HashMap<String, u64>,
+    /// Complete Nostr key information (all formats)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nostr_keys: Option<NostrKeyInfo>,
+    /// DEPRECATED: Legacy field for backward compatibility
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[deprecated(note = "Use nostr_keys instead")]
+    pub nostr_private_key: Option<String>,
 }
 
 impl BotState {
@@ -27,6 +47,9 @@ impl BotState {
     pub fn new() -> Self {
         BotState {
             message_counts: HashMap::new(),
+            nostr_keys: None,
+            #[allow(deprecated)]
+            nostr_private_key: None,
         }
     }
 
@@ -36,10 +59,15 @@ impl BotState {
 
         match fs::read_to_string(&path) {
             Ok(contents) => {
+                log::debug!("[State] File contents:\n{}", contents);
                 match serde_yaml::from_str::<BotState>(&contents) {
                     Ok(state) => {
                         log::info!("[Startup] Loaded state from {}", path.display());
                         log::info!("[Startup] Loaded message counts for {} groups", state.message_counts.len());
+                        log::info!("[Startup] Nostr keys present: {}", state.nostr_keys.is_some());
+                        if let Some(ref keys) = state.nostr_keys {
+                            log::debug!("[Startup] Loaded nostr_keys: npub={}, nsec={}", keys.npub, keys.nsec);
+                        }
                         state
                     }
                     Err(e) => {
@@ -48,8 +76,8 @@ impl BotState {
                     }
                 }
             }
-            Err(_) => {
-                log::info!("[Startup] No state file found. Starting fresh.");
+            Err(e) => {
+                log::info!("[Startup] No state file found at {}: {}. Starting fresh.", path.display(), e);
                 BotState::new()
             }
         }
@@ -62,10 +90,14 @@ impl BotState {
         let yaml = serde_yaml::to_string(self)
             .map_err(|e| format!("Failed to serialize state: {}", e))?;
 
+        log::debug!("[State] Saving to {}", path.display());
+        log::debug!("[State] Nostr keys present: {}", self.nostr_keys.is_some());
+        log::debug!("[State] YAML content:\n{}", yaml);
+
         fs::write(&path, yaml)
             .map_err(|e| format!("Failed to write state file: {}", e))?;
 
-        log::debug!("[State] Saved message counts to {}", path.display());
+        log::debug!("[State] Saved state to {}", path.display());
         Ok(())
     }
 
@@ -87,6 +119,30 @@ impl BotState {
     /// Get message count for a group
     pub fn get_count(&self, group_id: &str) -> Option<u64> {
         self.message_counts.get(group_id).copied()
+    }
+
+    /// Set Nostr key information (all formats)
+    pub fn set_nostr_keys(&mut self, keys: Option<NostrKeyInfo>) {
+        self.nostr_keys = keys;
+    }
+
+    /// Get Nostr key information (all formats)
+    pub fn get_nostr_keys(&self) -> Option<&NostrKeyInfo> {
+        self.nostr_keys.as_ref()
+    }
+
+    /// DEPRECATED: Legacy getter for backward compatibility
+    #[deprecated(note = "Use get_nostr_keys instead")]
+    #[allow(deprecated)]
+    pub fn get_nostr_private_key(&self) -> Option<&String> {
+        self.nostr_private_key.as_ref()
+    }
+
+    /// DEPRECATED: Legacy setter for backward compatibility
+    #[deprecated(note = "Use set_nostr_keys instead")]
+    #[allow(deprecated)]
+    pub fn set_nostr_private_key(&mut self, key: Option<String>) {
+        self.nostr_private_key = key;
     }
 }
 
@@ -207,6 +263,45 @@ mod tests {
         assert_eq!(state4.message_counts.get("group1"), Some(&15));
         assert_eq!(state4.message_counts.get("group2"), Some(&12));
         assert_eq!(state4.message_counts.get("group3"), Some(&3));
+
+        // Cleanup
+        fs::remove_file(&state_file).ok();
+        env::set_current_dir(&original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_nostr_key_persistence() {
+        use std::env;
+
+        let temp_dir = env::temp_dir();
+        let original_dir = env::current_dir().unwrap();
+
+        // Change to temp directory for this test
+        env::set_current_dir(&temp_dir).unwrap();
+
+        // Clean up any existing state file
+        let state_file = temp_dir.join("qaul-bot.yml");
+        fs::remove_file(&state_file).ok();
+
+        // Create state with Nostr keys
+        let mut state1 = BotState::new();
+        let key_info = NostrKeyInfo {
+            private_key_hex: "a".repeat(64),
+            public_key_hex: "b".repeat(64),
+            npub: "npub1test123".to_string(),
+            nsec: "nsec1test456".to_string(),
+        };
+        state1.set_nostr_keys(Some(key_info.clone()));
+        state1.save().unwrap();
+
+        // Load state and verify keys are preserved
+        let state2 = BotState::load();
+        assert!(state2.get_nostr_keys().is_some());
+        let loaded_keys = state2.get_nostr_keys().unwrap();
+        assert_eq!(loaded_keys.private_key_hex, key_info.private_key_hex);
+        assert_eq!(loaded_keys.public_key_hex, key_info.public_key_hex);
+        assert_eq!(loaded_keys.npub, key_info.npub);
+        assert_eq!(loaded_keys.nsec, key_info.nsec);
 
         // Cleanup
         fs::remove_file(&state_file).ok();

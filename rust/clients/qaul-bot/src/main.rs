@@ -17,6 +17,7 @@ use std::{thread, time::Duration};
 mod chat;
 mod feed;
 mod group;
+mod nostr_bridge;
 mod rpc;
 mod state;
 mod user_accounts;
@@ -24,7 +25,9 @@ mod user_accounts;
 use chat::Chat;
 use feed::Feed;
 use group::Group;
+use nostr_bridge::{NostrBridge, NostrConfig, NostrKeys};
 use rpc::Rpc;
+use state::BotState;
 use user_accounts::UserAccounts;
 
 /// Event Types of the async loop
@@ -77,6 +80,16 @@ async fn main() {
 
     // initialize group module with user ID
     Group::init(user_id_bytes);
+
+    // Initialize Nostr bridge
+    let nostr_bridge = initialize_nostr_bridge().await;
+    if let Some(bridge) = &nostr_bridge {
+        log::info!("[Nostr] Bridge initialized successfully");
+        // Store bridge in global state for use by Chat module
+        chat::set_nostr_bridge(bridge.clone()).await;
+    } else {
+        log::warn!("[Nostr] Failed to initialize bridge - continuing without Nostr integration");
+    }
 
     // query account information via RPC
     UserAccounts::request_default_account();
@@ -133,6 +146,82 @@ async fn main() {
                     Group::request_group_list();
                 }
             }
+        }
+    }
+}
+
+/// Initialize Nostr bridge with key generation/loading and relay connections
+async fn initialize_nostr_bridge() -> Option<NostrBridge> {
+    // Load or create bot state
+    let mut bot_state = BotState::load();
+
+    // Load or generate Nostr keys
+    let nostr_keys = match bot_state.get_nostr_keys() {
+        Some(key_info) => {
+            // Load existing key from complete key info
+            match NostrKeys::from_info(key_info) {
+                Ok(keys) => {
+                    log::info!("[Nostr] Loaded existing keypair from state");
+                    log::info!("[Nostr] Public key (npub): {}", keys.to_npub());
+                    log::info!("[Nostr] All key formats available (private_key_hex, public_key_hex, npub, nsec)");
+                    keys
+                }
+                Err(e) => {
+                    log::error!("[Nostr] Failed to load keypair: {}", e);
+                    log::info!("[Nostr] Generating new keypair");
+                    let new_keys = NostrKeys::generate();
+                    let npub = new_keys.to_npub();
+                    log::info!("[Nostr] Generated new public key (npub): {}", npub);
+
+                    // Save complete key info to state
+                    bot_state.set_nostr_keys(Some(new_keys.to_info()));
+                    if let Err(e) = bot_state.save() {
+                        log::error!("[Nostr] Failed to save state: {}", e);
+                    } else {
+                        log::info!("[Nostr] Saved complete key information to state");
+                    }
+
+                    new_keys
+                }
+            }
+        }
+        None => {
+            // Generate new keypair on first run
+            log::info!("[Nostr] No existing keypair found - generating new one");
+            let new_keys = NostrKeys::generate();
+            let npub = new_keys.to_npub();
+            log::info!("[Nostr] Generated public key (npub): {}", npub);
+
+            // Save complete key info to state
+            bot_state.set_nostr_keys(Some(new_keys.to_info()));
+            if let Err(e) = bot_state.save() {
+                log::error!("[Nostr] Failed to save state: {}", e);
+            } else {
+                log::info!("[Nostr] Saved complete key information to state");
+            }
+
+            new_keys
+        }
+    };
+
+    // Create Nostr configuration
+    let config = NostrConfig::default();
+
+    log::info!("[Nostr] Connecting to {} relays:", config.relays.len());
+    for relay in &config.relays {
+        log::info!("[Nostr]   - {}", relay);
+    }
+
+    // Initialize Nostr bridge
+    match NostrBridge::new(nostr_keys, &config).await {
+        Ok(bridge) => {
+            log::info!("[Nostr] Successfully connected to relays");
+            log::info!("[Nostr] Target recipient: {}", config.target_npub);
+            Some(bridge)
+        }
+        Err(e) => {
+            log::error!("[Nostr] Failed to initialize bridge: {}", e);
+            None
         }
     }
 }

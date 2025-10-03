@@ -13,6 +13,7 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use crate::nostr_bridge::NostrBridge;
 use crate::state::BotState;
 
 /// include generated protobuf RPC rust definition file
@@ -25,6 +26,9 @@ static CHAT_STATE: Lazy<RwLock<ChatState>> = Lazy::new(|| RwLock::new(ChatState:
 
 /// Static storage for user ID
 static USER_ID: OnceCell<Vec<u8>> = OnceCell::new();
+
+/// Global Nostr bridge instance
+static NOSTR_BRIDGE: OnceCell<tokio::sync::RwLock<Option<NostrBridge>>> = OnceCell::new();
 
 /// Chat state tracking
 pub struct ChatState {
@@ -79,6 +83,13 @@ impl ChatState {
 
 /// Chat module function handling
 pub struct Chat {}
+
+/// Set the global Nostr bridge instance
+pub async fn set_nostr_bridge(bridge: NostrBridge) {
+    let lock = NOSTR_BRIDGE.get_or_init(|| tokio::sync::RwLock::new(None));
+    let mut writer = lock.write().await;
+    *writer = Some(bridge);
+}
 
 impl Chat {
     /// Initialize Chat module with user ID
@@ -293,6 +304,38 @@ impl Chat {
                 sender_id,
                 content
             );
+
+            // Forward to Nostr if bridge is available and this is a user message
+            if Self::is_user_message(&message.content) {
+                let group_id_copy = group_id.clone();
+                let sender_id_copy = message.sender_id.clone();
+                let content_copy = content.clone();
+                let timestamp = message.sent_at;
+
+                // Spawn async task to forward to Nostr (non-blocking)
+                async_std::task::spawn(async move {
+                    if let Some(bridge_lock) = NOSTR_BRIDGE.get() {
+                        if let Some(bridge) = bridge_lock.read().await.as_ref() {
+                            match bridge
+                                .forward_qaul_message(
+                                    &sender_id_copy,
+                                    &group_id_copy,
+                                    &content_copy,
+                                    timestamp,
+                                )
+                                .await
+                            {
+                                Ok(_) => {
+                                    log::info!("[Nostr] Successfully forwarded message to Nostr");
+                                }
+                                Err(e) => {
+                                    log::error!("[Nostr] Failed to forward message: {}", e);
+                                }
+                            }
+                        }
+                    }
+                });
+            }
 
             // Send auto-reply only if message is not from the bot itself
             if message.sender_id != bot_user_id {
