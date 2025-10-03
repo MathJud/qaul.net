@@ -569,7 +569,7 @@ impl Ble {
 
     /// send feed message
     pub fn send_feed_message(_topic: Topic, data: Vec<u8>) {
-        log::info!("BLE send public message");
+        log::trace!("BLE send public message");
 
         // find all nodes, that are only connected through BLE
         let nodes = Neighbours::get_ble_only_nodes();

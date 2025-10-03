@@ -14,18 +14,18 @@ use futures::prelude::*;
 use futures_ticker::Ticker;
 use std::{thread, time::Duration};
 
-mod rpc;
-mod feed;
-mod user_accounts;
-mod group;
 mod chat;
+mod feed;
+mod group;
+mod rpc;
 mod state;
+mod user_accounts;
 
-use rpc::Rpc;
-use feed::Feed;
-use user_accounts::UserAccounts;
-use group::Group;
 use chat::Chat;
+use feed::Feed;
+use group::Group;
+use rpc::Rpc;
+use user_accounts::UserAccounts;
 
 /// Event Types of the async loop
 enum EventType {
@@ -64,7 +64,10 @@ async fn main() {
     }
     let user_account = user_account.unwrap();
     let user_id_bytes = user_account.id.to_bytes();
-    log::info!("Using user ID: {}", bs58::encode(&user_id_bytes).into_string());
+    log::info!(
+        "Using user ID: {}",
+        bs58::encode(&user_id_bytes).into_string()
+    );
 
     // initialize feed module
     Feed::init(user_id_bytes.clone());
@@ -79,13 +82,13 @@ async fn main() {
     UserAccounts::request_default_account();
 
     // create ticker for polling RPC every 1 second
-    let mut rpc_ticker = Ticker::new(Duration::from_secs(1));
+    let mut rpc_ticker = Ticker::new(Duration::from_millis(100));
 
     // create ticker for sending feed messages every 10 seconds
-    let mut feed_ticker = Ticker::new(Duration::from_secs(10));
+    let mut feed_ticker = Ticker::new(Duration::from_secs(60));
 
     // create ticker for polling group list every 1 second
-    let mut group_ticker = Ticker::new(Duration::from_secs(1));
+    let mut group_ticker = Ticker::new(Duration::from_millis(500));
 
     log::info!("qaul-bot started successfully");
     log::info!("Polling RPC every 1 second");

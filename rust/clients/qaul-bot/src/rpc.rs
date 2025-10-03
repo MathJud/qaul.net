@@ -18,7 +18,7 @@ impl Rpc {
     pub fn received_message(data: Vec<u8>) {
         match proto::QaulRpc::decode(&data[..]) {
             Ok(message) => {
-                log::info!("qaul rpc message received");
+                log::trace!("qaul rpc message received");
 
                 match proto::Modules::try_from(message.module) {
                     Ok(proto::Modules::Feed) => {

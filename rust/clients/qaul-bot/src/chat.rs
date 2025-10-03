@@ -34,6 +34,7 @@ pub struct ChatState {
 
 impl ChatState {
     fn new() -> Self {
+        #[allow(unused_mut)] // mut only needed in non-test builds
         let mut last_seen_indices = HashMap::new();
 
         // Load persistent state from disk (only in production, not in tests)
@@ -240,16 +241,28 @@ impl Chat {
         let group_id = conversation.group_id.clone();
 
         // Get last seen index for deduplication
-        let last_seen = {
+        // Returns None if this is a new conversation (never seen before)
+        let last_seen_option = {
             let state = CHAT_STATE.read().unwrap();
-            state.last_seen_indices.get(&group_id).copied().unwrap_or(0)
+            state.last_seen_indices.get(&group_id).copied()
         };
 
         // Filter and display only new messages
         let new_messages: Vec<_> = conversation
             .message_list
             .into_iter()
-            .filter(|msg| msg.index > last_seen)
+            .filter(|msg| {
+                match last_seen_option {
+                    None => {
+                        // New conversation - include all messages from index 0 onwards
+                        true
+                    }
+                    Some(last_seen) => {
+                        // Existing conversation - only messages after last_seen
+                        msg.index > last_seen
+                    }
+                }
+            })
             .collect();
 
         if new_messages.is_empty() {
@@ -410,5 +423,38 @@ mod tests {
 
         assert_eq!(Chat::get_last_seen_index(&group_id_1), Some(5));
         assert_eq!(Chat::get_last_seen_index(&group_id_2), Some(10));
+    }
+
+    #[test]
+    fn test_index_zero_message_processing() {
+        // This test verifies the fix for the bug where messages with index 0
+        // were incorrectly skipped in new conversations.
+        //
+        // Bug: When last_seen_index defaulted to 0 for new conversations,
+        // the filter check `msg.index > 0` would be false for index 0,
+        // causing the first message to be skipped.
+        //
+        // Fix: Use Option<u64> to distinguish between:
+        // - None: New conversation, process all messages
+        // - Some(n): Process only messages with index > n
+
+        Chat::init(vec![1, 2, 3, 4]); // Dummy user ID for test
+        let group_id = vec![255, 6, 0, 0];
+
+        // Verify new conversation has no last_seen_index
+        assert_eq!(Chat::get_last_seen_index(&group_id), None);
+
+        // Simulate processing message with index 0
+        Chat::update_last_seen_index(group_id.clone(), 0);
+
+        // Verify message 0 was recorded as processed
+        assert_eq!(Chat::get_last_seen_index(&group_id), Some(0));
+
+        // Simulate processing subsequent messages
+        Chat::update_last_seen_index(group_id.clone(), 1);
+        assert_eq!(Chat::get_last_seen_index(&group_id), Some(1));
+
+        Chat::update_last_seen_index(group_id.clone(), 2);
+        assert_eq!(Chat::get_last_seen_index(&group_id), Some(2));
     }
 }
