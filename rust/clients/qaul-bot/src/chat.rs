@@ -311,7 +311,7 @@ impl Chat {
         };
 
         // Get bot's user ID for comparison
-        let bot_user_id = USER_ID.get().cloned().unwrap_or_default();
+        let _bot_user_id = USER_ID.get().cloned().unwrap_or_default();
 
         // Display new messages and send auto-replies
         for message in &new_messages {

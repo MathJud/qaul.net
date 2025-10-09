@@ -293,23 +293,41 @@ impl NostrBridge {
         // Subscribe to encrypted DMs sent to our public key
         let my_pubkey = self.keys.public_key();
 
-        // Create filter for encrypted DMs to us
+        // Calculate timestamp for 24 hours ago to get recent messages
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let twenty_four_hours_ago = now.saturating_sub(24 * 60 * 60);
+        let since_timestamp = Timestamp::from(twenty_four_hours_ago);
+
+        // Create filter for encrypted DMs sent TO us
+        // For encrypted DMs, the recipient's pubkey is in the 'p' tag
         let filter = Filter::new()
             .kind(Kind::EncryptedDirectMessage)
-            .pubkey(my_pubkey);
+            .custom_tag(
+                nostr_sdk::SingleLetterTag::lowercase(nostr_sdk::Alphabet::P),
+                my_pubkey.to_hex()
+            )
+            .since(since_timestamp);  // Get recent messages from last 24h
 
         self.client
             .subscribe(filter, None)
             .await
             .map_err(|e| format!("Failed to subscribe to DMs: {}", e))?;
 
-        log::info!("[Nostr] Subscribed to incoming encrypted DMs");
+        log::info!("[Nostr] Subscribed to incoming encrypted DMs sent to us");
+        log::info!("[Nostr] Our public key (npub): {}", my_pubkey.to_bech32().unwrap());
+        log::info!("[Nostr] Fetching messages from last 24 hours");
         Ok(())
     }
 
     /// Check for new incoming messages and return parsed messages
     pub async fn check_for_messages(&self) -> Result<Vec<NostrIncomingMessage>, String> {
         let mut messages = Vec::new();
+        let mut total_notifications = 0;
+        let mut dm_count = 0;
+        let mut old_dm_count = 0;
 
         // Get current timestamp for filtering
         let last_seen = {
@@ -322,15 +340,35 @@ impl NostrBridge {
 
         // Process incoming events (non-blocking)
         while let Ok(notification) = notifications.try_recv() {
+            total_notifications += 1;
+            
             if let RelayPoolNotification::Event { event, .. } = notification {
-                // Only process DMs sent to us after last seen timestamp
-                if event.kind == Kind::EncryptedDirectMessage
-                    && event.created_at.as_u64() > last_seen {
+                // Count all DMs, even old ones
+                if event.kind == Kind::EncryptedDirectMessage {
+                    dm_count += 1;
+                    
+                    // Check if this is a new message
+                    if event.created_at.as_u64() <= last_seen {
+                        old_dm_count += 1;
+                        log::debug!(
+                            "[Nostr] Skipping old DM (timestamp: {}, last_seen: {})",
+                            event.created_at.as_u64(),
+                            last_seen
+                        );
+                        continue;
+                    }
+
+                    log::info!(
+                        "[Nostr] New DM detected from {} (timestamp: {})",
+                        event.pubkey.to_bech32().unwrap_or_else(|_| "unknown".to_string()),
+                        event.created_at.as_u64()
+                    );
 
                     // Decrypt the message
                     match nip04::decrypt(&self.keys.secret_key(), &event.pubkey, &event.content) {
                         Ok(decrypted_content) => {
-                            log::info!("[Nostr] Received encrypted DM, decrypting...");
+                            log::info!("[Nostr] Successfully decrypted DM");
+                            log::debug!("[Nostr] Decrypted content: {}", decrypted_content);
 
                             // Parse JSON payload
                             match NostrIncomingMessage::from_json(&decrypted_content) {
@@ -357,6 +395,18 @@ impl NostrBridge {
                     }
                 }
             }
+        }
+
+        // Log summary every 10 polls (to avoid spam, but still informative)
+        if total_notifications > 0 || messages.len() > 0 {
+            log::debug!(
+                "[Nostr Poll] {} notifications, {} DMs ({} old, {} new), {} parsed messages",
+                total_notifications,
+                dm_count,
+                old_dm_count,
+                dm_count - old_dm_count,
+                messages.len()
+            );
         }
 
         Ok(messages)
