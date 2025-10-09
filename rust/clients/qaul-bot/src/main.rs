@@ -17,7 +17,7 @@ use std::{thread, time::Duration};
 mod chat;
 mod feed;
 mod group;
-mod nostr_bridge;
+mod http_bridge;
 mod rpc;
 mod state;
 mod user_accounts;
@@ -25,7 +25,7 @@ mod user_accounts;
 use chat::Chat;
 use feed::Feed;
 use group::Group;
-use nostr_bridge::{NostrBridge, NostrConfig, NostrKeys};
+use http_bridge::{HttpBridge, HttpConfig};
 use rpc::Rpc;
 use state::BotState;
 use user_accounts::UserAccounts;
@@ -35,7 +35,7 @@ enum EventType {
     RpcPoll,
     SendFeedMessage,
     PollGroupList,
-    PollNostrMessages,
+    PollHttpMessages,
 }
 
 #[async_std::main]
@@ -82,20 +82,11 @@ async fn main() {
     // initialize group module with user ID
     Group::init(user_id_bytes);
 
-    // Initialize Nostr bridge
-    let nostr_bridge = initialize_nostr_bridge().await;
-    if let Some(bridge) = &nostr_bridge {
-        log::info!("[Nostr] Bridge initialized successfully");
-        // Store bridge in global state for use by Chat module
-        chat::set_nostr_bridge(bridge.clone()).await;
-
-        // Start listening for incoming DMs
-        if let Err(e) = bridge.start_listening().await {
-            log::error!("[Nostr] Failed to start listening: {}", e);
-        }
-    } else {
-        log::warn!("[Nostr] Failed to initialize bridge - continuing without Nostr integration");
-    }
+    // Initialize HTTP bridge
+    let http_bridge = initialize_http_bridge();
+    log::info!("[HTTP] Bridge initialized successfully");
+    // Store bridge in global state for use by Chat module
+    chat::set_http_bridge(http_bridge.clone()).await;
 
     // query account information via RPC
     UserAccounts::request_default_account();
@@ -109,14 +100,14 @@ async fn main() {
     // create ticker for polling group list every 1 second
     let mut group_ticker = Ticker::new(Duration::from_millis(500));
 
-    // create ticker for polling Nostr messages every 1 second
-    let mut nostr_ticker = Ticker::new(Duration::from_secs(1));
+    // create ticker for polling HTTP messages every 1 second
+    let mut http_ticker = Ticker::new(Duration::from_secs(1));
 
     log::info!("qaul-bot started successfully");
     log::info!("Polling RPC every 1 second");
     log::info!("Sending feed messages every 10 seconds");
     log::info!("Monitoring group chats every 1 second");
-    log::info!("Polling Nostr messages every 1 second");
+    log::info!("Polling HTTP messages every 1 second");
 
     // main event loop
     loop {
@@ -124,18 +115,18 @@ async fn main() {
             let rpc_fut = rpc_ticker.next().fuse();
             let feed_fut = feed_ticker.next().fuse();
             let group_fut = group_ticker.next().fuse();
-            let nostr_fut = nostr_ticker.next().fuse();
+            let http_fut = http_ticker.next().fuse();
 
             futures::pin_mut!(rpc_fut);
             futures::pin_mut!(feed_fut);
             futures::pin_mut!(group_fut);
-            futures::pin_mut!(nostr_fut);
+            futures::pin_mut!(http_fut);
 
             futures::select! {
                 _rpc_tick = rpc_fut => Some(EventType::RpcPoll),
                 _feed_tick = feed_fut => Some(EventType::SendFeedMessage),
                 _group_tick = group_fut => Some(EventType::PollGroupList),
-                _nostr_tick = nostr_fut => Some(EventType::PollNostrMessages),
+                _http_tick = http_fut => Some(EventType::PollHttpMessages),
             }
         };
 
@@ -158,120 +149,85 @@ async fn main() {
                     // request group list to check for new messages
                     Group::request_group_list();
                 }
-                EventType::PollNostrMessages => {
-                    // poll for Nostr messages and forward to qaul
-                    if let Some(ref bridge) = nostr_bridge {
-                        let bridge_clone = bridge.clone();
-                        async_std::task::spawn(async move {
-                            match bridge_clone.check_for_messages().await {
-                                Ok(messages) => {
+                EventType::PollHttpMessages => {
+                    // poll for HTTP messages and forward to qaul
+                    let bridge_clone = http_bridge.clone();
+                    async_std::task::spawn(async move {
+                        log::debug!("[HTTP] Starting poll for new messages");
+                        match bridge_clone.receive_messages().await {
+                            Ok(messages) => {
+                                if messages.is_empty() {
+                                    log::debug!("[HTTP] No new messages in this poll");
+                                } else {
+                                    log::info!("[HTTP] Received {} new messages", messages.len());
+
                                     for msg in messages {
                                         log::info!(
-                                            "[Nostr→qaul] Forwarding message to group: {}",
-                                            msg.chat_group
+                                            "[HTTP→qaul] Processing message - groupId: {}, message: '{}', eventId: {}",
+                                            msg.group_id,
+                                            msg.message,
+                                            msg.event_id
                                         );
 
                                         // Send message to qaul group
                                         if let Err(e) = Chat::send_message_to_group(
-                                            &msg.chat_group,
-                                            msg.message_text.clone(),
+                                            &msg.group_id,
+                                            msg.message.clone(),
                                         ) {
                                             log::error!(
-                                                "[Nostr→qaul] Failed to send message: {}",
+                                                "[HTTP→qaul] Failed to send message to group {}: {}",
+                                                msg.group_id,
                                                 e
                                             );
                                         } else {
                                             log::info!(
-                                                "[Nostr→qaul] Successfully forwarded: {}",
-                                                msg.message_text
+                                                "[HTTP→qaul] Successfully forwarded message to group {}: '{}'",
+                                                msg.group_id,
+                                                msg.message
                                             );
+
+                                            // Update last event ID
+                                            bridge_clone.update_last_event_id(msg.event_id);
+                                            log::info!("[HTTP] Updated last event ID to: {}", msg.event_id);
+
+                                            // Save to state file
+                                            let mut bot_state = BotState::load();
+                                            bot_state.set_last_event_id(msg.event_id);
+                                            if let Err(e) = bot_state.save() {
+                                                log::error!("[HTTP] Failed to save state: {}", e);
+                                            } else {
+                                                log::debug!("[HTTP] Saved state with event ID: {}", msg.event_id);
+                                            }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    log::debug!("[Nostr] No new messages: {}", e);
-                                }
                             }
-                        });
-                    }
+                            Err(e) => {
+                                log::warn!("[HTTP] Error polling messages: {}", e);
+                            }
+                        }
+                    });
                 }
             }
         }
     }
 }
 
-/// Initialize Nostr bridge with key generation/loading and relay connections
-async fn initialize_nostr_bridge() -> Option<NostrBridge> {
-    // Load or create bot state
-    let mut bot_state = BotState::load();
+/// Initialize HTTP bridge with configuration and last event ID from state
+fn initialize_http_bridge() -> HttpBridge {
+    // Load bot state to get last event ID
+    let bot_state = BotState::load();
+    let last_event_id = bot_state.get_last_event_id();
 
-    // Load or generate Nostr keys
-    let nostr_keys = match bot_state.get_nostr_keys() {
-        Some(key_info) => {
-            // Load existing key from complete key info
-            match NostrKeys::from_info(key_info) {
-                Ok(keys) => {
-                    log::info!("[Nostr] Loaded existing keypair from state");
-                    log::info!("[Nostr] Public key (npub): {}", keys.to_npub());
-                    log::info!("[Nostr] All key formats available (private_key_hex, public_key_hex, npub, nsec)");
-                    keys
-                }
-                Err(e) => {
-                    log::error!("[Nostr] Failed to load keypair: {}", e);
-                    log::info!("[Nostr] Generating new keypair");
-                    let new_keys = NostrKeys::generate();
-                    let npub = new_keys.to_npub();
-                    log::info!("[Nostr] Generated new public key (npub): {}", npub);
+    log::info!("[HTTP] Last event ID from state: {}", last_event_id);
 
-                    // Save complete key info to state
-                    bot_state.set_nostr_keys(Some(new_keys.to_info()));
-                    if let Err(e) = bot_state.save() {
-                        log::error!("[Nostr] Failed to save state: {}", e);
-                    } else {
-                        log::info!("[Nostr] Saved complete key information to state");
-                    }
+    // Create HTTP configuration
+    let config = HttpConfig::default();
 
-                    new_keys
-                }
-            }
-        }
-        None => {
-            // Generate new keypair on first run
-            log::info!("[Nostr] No existing keypair found - generating new one");
-            let new_keys = NostrKeys::generate();
-            let npub = new_keys.to_npub();
-            log::info!("[Nostr] Generated public key (npub): {}", npub);
+    log::info!("[HTTP] Base URL: {}", config.base_url);
+    log::info!("[HTTP] Network ID: {}", config.network_id);
+    log::info!("[HTTP] Bot ID: {}", config.bot_id);
 
-            // Save complete key info to state
-            bot_state.set_nostr_keys(Some(new_keys.to_info()));
-            if let Err(e) = bot_state.save() {
-                log::error!("[Nostr] Failed to save state: {}", e);
-            } else {
-                log::info!("[Nostr] Saved complete key information to state");
-            }
-
-            new_keys
-        }
-    };
-
-    // Create Nostr configuration
-    let config = NostrConfig::default();
-
-    log::info!("[Nostr] Connecting to {} relays:", config.relays.len());
-    for relay in &config.relays {
-        log::info!("[Nostr]   - {}", relay);
-    }
-
-    // Initialize Nostr bridge
-    match NostrBridge::new(nostr_keys, &config).await {
-        Ok(bridge) => {
-            log::info!("[Nostr] Successfully connected to relays");
-            log::info!("[Nostr] Target recipient: {}", config.target_npub);
-            Some(bridge)
-        }
-        Err(e) => {
-            log::error!("[Nostr] Failed to initialize bridge: {}", e);
-            None
-        }
-    }
+    // Initialize HTTP bridge
+    HttpBridge::new(config, last_event_id)
 }

@@ -8,7 +8,7 @@
 pub mod chat;
 pub mod feed;
 pub mod group;
-pub mod nostr_bridge;
+pub mod http_bridge;
 pub mod rpc;
 pub mod state;
 pub mod user_accounts;

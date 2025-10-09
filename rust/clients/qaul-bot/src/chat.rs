@@ -13,7 +13,7 @@ use prost::Message;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use crate::nostr_bridge::NostrBridge;
+use crate::http_bridge::HttpBridge;
 use crate::state::BotState;
 
 /// include generated protobuf RPC rust definition file
@@ -27,8 +27,8 @@ static CHAT_STATE: Lazy<RwLock<ChatState>> = Lazy::new(|| RwLock::new(ChatState:
 /// Static storage for user ID
 static USER_ID: OnceCell<Vec<u8>> = OnceCell::new();
 
-/// Global Nostr bridge instance
-static NOSTR_BRIDGE: OnceCell<tokio::sync::RwLock<Option<NostrBridge>>> = OnceCell::new();
+/// Global HTTP bridge instance
+static HTTP_BRIDGE: OnceCell<tokio::sync::RwLock<Option<HttpBridge>>> = OnceCell::new();
 
 /// Chat state tracking
 pub struct ChatState {
@@ -90,9 +90,9 @@ impl ChatState {
 /// Chat module function handling
 pub struct Chat {}
 
-/// Set the global Nostr bridge instance
-pub async fn set_nostr_bridge(bridge: NostrBridge) {
-    let lock = NOSTR_BRIDGE.get_or_init(|| tokio::sync::RwLock::new(None));
+/// Set the global HTTP bridge instance
+pub async fn set_http_bridge(bridge: HttpBridge) {
+    let lock = HTTP_BRIDGE.get_or_init(|| tokio::sync::RwLock::new(None));
     let mut writer = lock.write().await;
     *writer = Some(bridge);
 }
@@ -325,35 +325,33 @@ impl Chat {
                 content
             );
 
-            // Forward to Nostr if bridge is available and this is a user message
+            // Forward to HTTP if bridge is available and this is a user message
             if Self::is_user_message(&message.content) {
                 let group_id_copy = group_id.clone();
                 let sender_id_copy = message.sender_id.clone();
                 let message_id_copy = message.message_id.clone();
                 let content_copy = content.clone();
-                let timestamp = message.sent_at;
 
-                // Spawn async task to forward to Nostr (non-blocking)
+                // Spawn async task to forward to HTTP (non-blocking)
                 async_std::task::spawn(async move {
-                    if let Some(bridge_lock) = NOSTR_BRIDGE.get() {
+                    if let Some(bridge_lock) = HTTP_BRIDGE.get() {
                         if let Some(bridge) = bridge_lock.read().await.as_ref() {
                             match bridge
-                                .forward_qaul_message_json(
-                                    &sender_id_copy,
+                                .send_message(
                                     &group_id_copy,
+                                    &sender_id_copy,
                                     &message_id_copy,
                                     &content_copy,
-                                    timestamp,
                                 )
                                 .await
                             {
                                 Ok(_) => {
                                     log::info!(
-                                        "[Nostr] Successfully forwarded JSON message to Nostr"
+                                        "[HTTP] Successfully forwarded message to HTTP endpoint"
                                     );
                                 }
                                 Err(e) => {
-                                    log::error!("[Nostr] Failed to forward message: {}", e);
+                                    log::error!("[HTTP] Failed to forward message: {}", e);
                                 }
                             }
                         }

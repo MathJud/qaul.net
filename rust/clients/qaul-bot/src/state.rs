@@ -33,6 +33,9 @@ pub struct NostrKeyInfo {
 pub struct BotState {
     /// Map of group_id (as base58 string) -> last_message_index
     pub message_counts: HashMap<String, u64>,
+    /// Last received event ID from HTTP stream
+    #[serde(default)]
+    pub last_event_id: u64,
     /// Complete Nostr key information (all formats)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nostr_keys: Option<NostrKeyInfo>,
@@ -47,6 +50,7 @@ impl BotState {
     pub fn new() -> Self {
         BotState {
             message_counts: HashMap::new(),
+            last_event_id: 0,
             nostr_keys: None,
             #[allow(deprecated)]
             nostr_private_key: None,
@@ -143,6 +147,16 @@ impl BotState {
     #[allow(deprecated)]
     pub fn set_nostr_private_key(&mut self, key: Option<String>) {
         self.nostr_private_key = key;
+    }
+
+    /// Get last event ID
+    pub fn get_last_event_id(&self) -> u64 {
+        self.last_event_id
+    }
+
+    /// Set last event ID
+    pub fn set_last_event_id(&mut self, event_id: u64) {
+        self.last_event_id = event_id;
     }
 }
 
