@@ -28,7 +28,7 @@ static CHAT_STATE: Lazy<RwLock<ChatState>> = Lazy::new(|| RwLock::new(ChatState:
 static USER_ID: OnceCell<Vec<u8>> = OnceCell::new();
 
 /// Global HTTP bridge instance
-static HTTP_BRIDGE: OnceCell<tokio::sync::RwLock<Option<HttpBridge>>> = OnceCell::new();
+static HTTP_BRIDGE: OnceCell<async_std::sync::RwLock<Option<HttpBridge>>> = OnceCell::new();
 
 /// Chat state tracking
 pub struct ChatState {
@@ -92,7 +92,7 @@ pub struct Chat {}
 
 /// Set the global HTTP bridge instance
 pub async fn set_http_bridge(bridge: HttpBridge) {
-    let lock = HTTP_BRIDGE.get_or_init(|| tokio::sync::RwLock::new(None));
+    let lock = HTTP_BRIDGE.get_or_init(|| async_std::sync::RwLock::new(None));
     let mut writer = lock.write().await;
     *writer = Some(bridge);
 }
@@ -311,7 +311,7 @@ impl Chat {
         };
 
         // Get bot's user ID for comparison
-        let _bot_user_id = USER_ID.get().cloned().unwrap_or_default();
+        let bot_user_id = USER_ID.get().cloned().unwrap_or_default();
 
         // Display new messages and send auto-replies
         for message in &new_messages {
@@ -325,8 +325,16 @@ impl Chat {
                 content
             );
 
-            // Forward to HTTP if bridge is available and this is a user message
-            if Self::is_user_message(&message.content) {
+            // Forward to HTTP if bridge is available, this is a user message,
+            // AND the message is NOT from the bot itself (to prevent loops)
+            let is_from_bot = message.sender_id == bot_user_id;
+
+            if is_from_bot {
+                log::debug!(
+                    "[Group: {}] Skipping HTTP forward - message is from bot itself (preventing loop)",
+                    group_id_str
+                );
+            } else if Self::is_user_message(&message.content) {
                 let group_id_copy = group_id.clone();
                 let sender_id_copy = message.sender_id.clone();
                 let message_id_copy = message.message_id.clone();
