@@ -110,7 +110,7 @@ open class BleWrapperClass(context: Activity) {
                 }
                 BleOuterClass.Ble.MessageCase.START_REQUEST -> {
                     qaulId = bleReq.startRequest.qaulId.toByteArray()
-                    AppLog.e(TAG, "qaulid : " + qaulId?.size)
+                    Log.i(TAG, "qaulid (${qaulId?.size}): ${BLEUtils.byteToHex(qaulId)}")
                     advertMode = bleReq.startRequest.powerSetting.toString()
                     if (qaulId != null) {
                         startService(context = context)

@@ -147,7 +147,7 @@ class BleService : LifecycleService() {
                     BluetoothGattCharacteristic.PROPERTY_READ,
                     BluetoothGattCharacteristic.PERMISSION_READ
                 )
-                AppLog.e(TAG, "qaulId : " + qaul_id)
+                AppLog.e(TAG, "qaulId : " + BLEUtils.byteToHex(qaul_id))
                 mainChar.value = qaulId
                 mainService.addCharacteristic(mainChar)
 

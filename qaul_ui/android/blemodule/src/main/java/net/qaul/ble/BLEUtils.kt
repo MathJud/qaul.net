@@ -142,6 +142,15 @@ object BLEUtils {
     }
 
     /**
+     * Convert Byte to ByteArray
+     * @param value Byte to convert
+     * @return ByteArray representation of the Byte
+     */
+    fun toByteArray(value: Byte): ByteArray {
+        return byteArrayOf(value)
+    }
+
+    /**
      * Convert crc32 to ByteArray
      * @param value UInt to convert
      * @return ByteArray representation of the UInt

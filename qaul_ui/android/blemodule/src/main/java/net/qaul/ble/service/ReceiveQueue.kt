@@ -49,6 +49,16 @@ enum class ReceiveChunkState {
 }
 
 /**
+ * Message Structure with Analyzed Header
+ */
+class ReceiveMessageStructure (
+    val queueIndex: Byte, // message queue index & message type
+    val chunkIndex: Short,
+    val resendIndicator: Boolean,
+    val payload: ByteArray,
+)
+
+/**
  * Qaul GATT Messaging is a service class that handles the qaul messages
  * that are sent in chunks as GATT messages.
  */
@@ -60,7 +70,7 @@ class ReceiveQueue {
     //var incoming: MutableList<ByteArray> = mutableListOf()
 
     // Current Message Queue Index
-    // there are 14 message receive queues, which are rotating.
+    // there are 29 message receive queues, which are rotating.
     var currentMessageQueueIndex: Byte = 0
 
     // Last Update
@@ -78,22 +88,23 @@ class ReceiveQueue {
         AppLog.e(TAG, "GattMessaging incomingMessage: chunk: $binaryString")
 
         // analyze message header
-        val (type, index, payload) = messageHeader(chunk)
+        //val (type, index, payload) = messageHeader(chunk)
+        val receiveMessageStructure = messageHeader(chunk)
         var receiveQueueResult: ReceiveQueueResult;
 
         // display message Type
-        binaryString = BLEUtils.toBinaryString(type)
-        AppLog.e(TAG, "GattMessaging incomingMessage type: $type, index: $index, payload size: ${payload.size}")
+        binaryString = BLEUtils.toBinaryString(receiveMessageStructure.queueIndex)
+        AppLog.e(TAG, "GattMessaging incoming Message type / Queue Index: ${binaryString}, Chunk index: ${receiveMessageStructure.chunkIndex}, resend indicator: ${receiveMessageStructure.resendIndicator}, payload size: ${receiveMessageStructure.payload.size}")
 
         // check if message is a flow control message
-        if (type == 0x00.toByte()) {
+        if (receiveMessageStructure.queueIndex == 0x00.toByte()) {
             // Flow Control Message
             AppLog.e(TAG, "GattMessaging incomingMessage flow control message")
-            receiveQueueResult = incomingFlowControlMessage(index.toByte(), payload)
+            receiveQueueResult = incomingFlowControlMessage(receiveMessageStructure.queueIndex, receiveMessageStructure.payload)
         } else {
             // Chunk Content Message
             AppLog.e(TAG, "GattMessaging incomingMessage chunk content message")
-            receiveQueueResult = incomingMessageChunk(type, index, payload)
+            receiveQueueResult = incomingMessageChunk(receiveMessageStructure)
         }
 
         return receiveQueueResult
@@ -101,18 +112,21 @@ class ReceiveQueue {
 
     /**
      * Analyze message header
-     * @return message type, index, payload
+     *
+     * @param chunk ByteArray
+     * @return ReceiveMessageStructure
      */
-    private fun messageHeader(chunk: ByteArray): Triple<Byte, Short, ByteArray> {
+    private fun messageHeader(chunk: ByteArray): ReceiveMessageStructure {
         var binaryString = BLEUtils.toBinaryString(chunk)
 
         // get message Type
         val b1: Byte = chunk.get(0)
-        val type: Byte = (b1.toInt() and 0xFF shr 4).toByte()
+        val type: Byte = (b1.toInt() and 0xFF shr 3).toByte()
         binaryString = BLEUtils.toBinaryString(type)
 
         // get more header information
         var chunkIndex: Short;
+        var resendIndicator: Boolean = false;
         var payload: ByteArray = ByteArray(0)
 
         // check if message is a flow control message;
@@ -128,15 +142,18 @@ class ReceiveQueue {
         } else {
             // chunk content message
 
+            // get resend indicator
+            val resendIndicator = (b1.toInt() and 0x04) != 0
+
             // get message index
             val b2: Byte = chunk.get(1)
-            chunkIndex = (((b1.toInt() and 0xFF shl 8) + b2) and "0000111111111111".toInt(2)).toShort()
+            chunkIndex = ((b1.toInt() and 0x07 shl 8) + b2).toShort()
 
             // get message payload
             payload = chunk.sliceArray(2 until chunk.size)
         }
 
-        return Triple(type, chunkIndex, payload)
+        return ReceiveMessageStructure(type, chunkIndex, resendIndicator, payload)
     }
 
     /**
@@ -215,20 +232,20 @@ class ReceiveQueue {
     /**
      * Handle incoming message chunks
      */
-    private fun incomingMessageChunk(queue: Byte, index: Short, payload: ByteArray): ReceiveQueueResult {
-        AppLog.e(TAG, "incomingMessageChunk: queue: $queue, index: $index, payload size: ${payload.size}")
-        var binaryString = BLEUtils.toBinaryString(payload)
+    private fun incomingMessageChunk(receiveMessageStructure: ReceiveMessageStructure): ReceiveQueueResult {
+        AppLog.e(TAG, "incomingMessageChunk: queue index: ${receiveMessageStructure.queueIndex}, chunk index: ${receiveMessageStructure.chunkIndex}, resend indicator: ${receiveMessageStructure.resendIndicator}, payload size: ${receiveMessageStructure.payload.size}")
+        var binaryString = BLEUtils.toBinaryString(receiveMessageStructure.payload)
         AppLog.e(TAG, "payload: $binaryString")
 
         // check Chunk State
-        val chunkState = checkChunkState(queue)
+        val chunkState = checkChunkState(receiveMessageStructure)
 
         when (chunkState) {
             ReceiveChunkState.CURRENT_QUEUE -> {
                 AppLog.e(TAG, "incomingMessageChunk: current queue")
 
                 // get ReceiveQueueMessage
-                var receiveQueueMessage: ReceiveQueueMessage? = receiveQueues.get(queue)
+                var receiveQueueMessage: ReceiveQueueMessage? = receiveQueues.get(receiveMessageStructure.queueIndex)
 
                 // check if index exists
                 if (receiveQueueMessage == null) {
@@ -239,22 +256,22 @@ class ReceiveQueue {
                 }
 
                 // add chunk to queue
-                val receiveQueueResult = receiveQueueMessage.addReceivedChunk(index, payload, qaulIdKnown)
-                receiveQueues.put(queue, receiveQueueMessage)
+                val receiveQueueResult = receiveQueueMessage.addReceivedChunk(receiveMessageStructure.chunkIndex, receiveMessageStructure.payload, qaulIdKnown)
+                receiveQueues.put(receiveMessageStructure.queueIndex, receiveQueueMessage)
 
                 return receiveQueueResult
             }
             ReceiveChunkState.NEW_QUEUE -> {
                 AppLog.e(TAG, "incomingMessageChunk: new queue")
-                currentMessageQueueIndex = queue
+                currentMessageQueueIndex = receiveMessageStructure.queueIndex
 
                 // create new ReceiveQueueMessage
                 var receiveQueueMessage = ReceiveQueueMessage()
-                receiveQueueMessage.messageQueueIndex = queue
+                receiveQueueMessage.messageQueueIndex = receiveMessageStructure.queueIndex
 
                 // add chunk to queue
-                var receiveQueueResult = receiveQueueMessage.addReceivedChunk(index, payload, qaulIdKnown)
-                receiveQueues.put(queue, receiveQueueMessage)
+                var receiveQueueResult = receiveQueueMessage.addReceivedChunk(receiveMessageStructure.chunkIndex, receiveMessageStructure.payload, qaulIdKnown)
+                receiveQueues.put(receiveMessageStructure.queueIndex, receiveQueueMessage)
 
                 // check if qaulId is known
                 if (!qaulIdKnown) {
@@ -266,7 +283,7 @@ class ReceiveQueue {
                 AppLog.e(TAG, "GattMessaging incomingMessageChunk missing chunk")
 
                 // get ReceiveQueueMessage
-                var receiveQueueMessage: ReceiveQueueMessage? = receiveQueues.get(queue)
+                var receiveQueueMessage: ReceiveQueueMessage? = receiveQueues.get(receiveMessageStructure.queueIndex)
 
                 // check if index exists
                 if (receiveQueueMessage == null && qaulIdKnown == false) {
@@ -276,8 +293,8 @@ class ReceiveQueue {
                 }
 
                 // add chunk to queue
-                val receiveQueueResult = receiveQueueMessage.addReceivedChunk(index, payload, qaulIdKnown)
-                receiveQueues.put(queue, receiveQueueMessage)
+                val receiveQueueResult = receiveQueueMessage.addReceivedChunk(receiveMessageStructure.chunkIndex, receiveMessageStructure.payload, qaulIdKnown)
+                receiveQueues.put(receiveMessageStructure.queueIndex, receiveQueueMessage)
 
                 return receiveQueueResult
             }
@@ -291,21 +308,23 @@ class ReceiveQueue {
     /**
      * Check Chunk State
      */
-    private fun checkChunkState(queue: Byte): ReceiveChunkState {
-        // check if current queue
-        if (queue == currentMessageQueueIndex) {
-            return ReceiveChunkState.CURRENT_QUEUE
+    private fun checkChunkState(receiveMessageStructure: ReceiveMessageStructure): ReceiveChunkState {
+        // check if it is a resent message
+        if (receiveMessageStructure.resendIndicator) {
+            if (receiveMessageStructure.queueIndex == currentMessageQueueIndex) {
+                return ReceiveChunkState.INVALID_CHUNK
+            }
+            return ReceiveChunkState.MISSING_CHUNK
         }
+        else {
+            // check if current queue
+            if (receiveMessageStructure.queueIndex == currentMessageQueueIndex) {
+                return ReceiveChunkState.CURRENT_QUEUE
+            }
 
-        // check if new queue
-        if (currentMessageQueueIndex == 0.toByte() ||
-            (queue > currentMessageQueueIndex && queue <= currentMessageQueueIndex + 3) ||
-            (currentMessageQueueIndex > 11 && queue <= 3 - (14 - currentMessageQueueIndex))) {
+            // must be new queue
             return ReceiveChunkState.NEW_QUEUE
         }
-
-        // chunk is missing chunk update
-        return ReceiveChunkState.MISSING_CHUNK
     }
 }
 
@@ -578,5 +597,59 @@ class ReceiveQueueMessage {
         }
 
         return receivedQueueResult
+    }
+}
+
+/**
+ * Large Message Queue
+ *
+ * This Queue collects the successfully received messages parts of a large message,
+ * and puts it together once all parts have been received.
+ */
+class ReceiveLargeMessageQueue {
+    // Receive Large Message Queues
+    // each queue is identified by the large message queue index in the first message header
+    var receiveLargeMessageQueues: MutableMap<Int, ReceiveLargeMessage> = mutableMapOf()
+
+    // add a new large message part
+    fun addPart(queueIndex: Int, partIndex: Int, partsTotal: Int, messagePart: ByteArray): Boolean {
+        // check if there is already a queue for this message
+
+        // add it to the queue
+
+        // check if all parts have been received
+
+        // create message and send it to the callback
+        return false
+    }
+}
+
+/**
+ * Large Message
+ *
+ * This class contains all the logic and the saves the parts of a large message being received.
+ */
+class ReceiveLargeMessage {
+    var partsTotal: Int = 0
+    var partsReceived: Int = 0
+    var messageParts: Array<ByteArray?> = arrayOfNulls(4)
+
+    /**
+     * Add a new message part
+     *
+     * If all parts of a messages were successfully received, the function returns true.
+     *
+     * @param partIndex Int
+     * @param partsTotal Int
+     * @param messagePart ByteArray
+     * @return Boolean - true if all parts were received, false otherwise
+     */
+    fun addPart(partIndex: Int, partsTotal: Int, messagePart: ByteArray): Boolean {
+        // check if part exists
+
+        // add part
+
+        //
+        return false
     }
 }

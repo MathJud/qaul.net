@@ -7,6 +7,19 @@
  *
  * - chop the messages into chunks
  * - manage the sending queues
+ *
+ * There is a small 2 Byte message header for each chunk.
+ * The 2 Bytes (16 bits) are packed as following:
+ *
+ * - 5 bits: message queue index
+ * - 1 bit: resend indicator
+ * - 10 bits: chunk index
+ *
+ * Each message is split into multiple chunks.
+ * Large messages are split into multiple message parts.
+ * Each message is sent in a separate queue.
+ * After the queue was sent, the missing message chunks are requested
+ * by the receiver and resent by the sender, setting the resend indicator bit to 1.
  */
 
 package net.qaul.ble.service
@@ -60,7 +73,7 @@ class SendQueue(qaulId: ByteArray) {
     var messagesToSend: Queue<Pair<ByteArray, String>> = LinkedList()
 
     // A map of all send queues. 
-    // There are 14 queues (indexes: 1-14).
+    // There are 29 queues (indexes: 1-29).
     // The first messages starts with index 1, once the messages is sent
     // the index is incremented by 1.
     var sendQueues: MutableMap<Byte, SendQueueMessage> = mutableMapOf()
@@ -137,9 +150,7 @@ class SendQueue(qaulId: ByteArray) {
     /**
      * get the next message queue index
      *
-     * TODO: implement the new queue solution:
-     * - set new index to free index
-     * - set next two index also to free index
+     * This sets the new index to free index
      */
     private fun getNextMessageIndex(): Byte? {
         if (currentIndex == 0.toByte()) {
@@ -147,37 +158,28 @@ class SendQueue(qaulId: ByteArray) {
             return currentIndex
         } else {
             var newIndex: Byte = (currentIndex + 1).toByte()
-            if (newIndex > 14.toByte()) {
-                // reset to 1 if index is greater than 14
+            if (newIndex > 29.toByte()) {
+                // reset to 1 if index is greater than 29
                 currentIndex = 1.toByte()
             } else {
                 currentIndex = newIndex
             }
 
-            // clear this and next three queues
-            for (i in 0..3) {
-                // wrap index if necessary
-                var indexToClear = (currentIndex + i).toByte()
-                if (indexToClear > 14.toByte()) {
-                    indexToClear = 14 - indexToClear
-                }
+            // clear the send queue for this index
+            if (sendQueues.containsKey(currentIndex)) {
+                var sendQueueMessage = sendQueues[currentIndex]
+                if (sendQueueMessage != null) {
+                    if (sendQueueMessage.state != SendQueueMessageState.SUCCESS &&
+                        sendQueueMessage.state != SendQueueMessageState.ERROR) {
+                        AppLog.e(TAG, "getNextMessageIndex: clear queue $currentIndex with message ID ${sendQueueMessage.messageId} in state ${sendQueueMessage.state}")
 
-                // clear the send queue for this index
-                if (sendQueues.containsKey(currentIndex)) {
-                    var sendQueueMessage = sendQueues[currentIndex]
-                    if (sendQueueMessage != null) {
-                        if (sendQueueMessage.state != SendQueueMessageState.SUCCESS &&
-                            sendQueueMessage.state != SendQueueMessageState.ERROR) {
-                            AppLog.e(TAG, "getNextMessageIndex: clear queue $indexToClear with message ID ${sendQueueMessage.messageId} in state ${sendQueueMessage.state}")
-
-                            // send message sending error to Libqaul
+                        // send message sending error to Libqaul
 
 
-                            // set queue to empty
-                            sendQueueMessage.state = SendQueueMessageState.EMPTY
-                            sendQueueMessage.messageId = ""
-                            sendQueueMessage.message = ByteArray(0)
-                        }
+                        // set queue to empty
+                        sendQueueMessage.state = SendQueueMessageState.EMPTY
+                        sendQueueMessage.messageId = ""
+                        sendQueueMessage.message = ByteArray(0)
                     }
                 }
             }
@@ -190,15 +192,15 @@ class SendQueue(qaulId: ByteArray) {
     /**
      * FLC ACK received
      * This method is called when an ACK for a Flow Control Message (FLC) is received.
-     * @param queueIndex the index of the queue (1-14)
+     * @param queueIndex the index of the queue (1-29)
      * @param success true if the ACK was successful, false if there was an error
      * @param errorCode the error code, if any
      * @return String indicating the message ID. Return empty string, if queue index is invalid or message is not found.
      */
     fun flcAckReceived(queueIndex: Byte, success: Boolean, errorCode: Byte): String {
         // check if queue index is valid
-        if (queueIndex < 1 || queueIndex > 14) {
-            AppLog.e(TAG, "GattMessaging FlcAckReceived: Invalid queue index $queueIndex. Must be between 1 and 14.")
+        if (queueIndex < 1 || queueIndex > 29) {
+            AppLog.e(TAG, "GattMessaging FlcAckReceived: Invalid queue index $queueIndex. Must be between 1 and 29.")
             return ""
         }
 
@@ -276,6 +278,7 @@ class SendQueue(qaulId: ByteArray) {
  */
 enum class SendQueueMessageState {
     EMPTY,   // queue is waiting to receive new messages
+    QUEUED,  // message is queued for sending
     SENDING, // the message is currently being sent
     SENT,    // the message was sent
     MISSING, // some chunks are missing
@@ -400,13 +403,16 @@ class SendQueueMessage {
     }
 
     /**
-     * Get the message header
-     * @param queueIndex the index of the queue (1-14)
+     * Get the message chunk header
+     *
+     * The header is 2 Bytes long.
+     *
      * @param chunkIndex the index of the chunk (0-based)
      * @return the header
      */
-    private fun getHeader(chunkIndex: Short): ByteArray {   
-        val headerInt: Int = (messageIndex.toInt() and 0xFF shl 12) or (chunkIndex.toInt() and 0xFFF)
+    private fun getHeader(chunkIndex: Short): ByteArray {
+        val resendIndicator: Int = if (state == SendQueueMessageState.SENDING || state == SendQueueMessageState.QUEUED) 0 else 1
+        val headerInt: Int = (messageIndex.toInt() and 0xFF shl 11) or (resendIndicator and 0xF shl 10) or (chunkIndex.toInt() and 0xFFF)
         val header: ByteArray = ByteArray(2)
         header[0] = (headerInt shr 8).toByte() // high byte
         header[1] = (headerInt and 0xFF).toByte() // low byte
@@ -415,9 +421,10 @@ class SendQueueMessage {
 
     /**
      * Get the first chunk header
-     * Header size is 18 Bytes and contains:
+     * Header size is 19 Bytes and contains:
      *
      * - 2 Bytes Chunk Header
+     * - 1 Byte Large Message Part
      * - 2 Bytes message size
      * - 2 Bytes total chunks
      * - 4 Bytes CRC32 
@@ -432,10 +439,15 @@ class SendQueueMessage {
         val crc32Value = crc32.value
 
         val header = getHeader(0)
+        val largeMessagePart = byteArrayOf(0x00)
         val headerMessageSize = BLEUtils.toByteArray(messageSize).sliceArray(2..3)
         val headerTotalChunks = BLEUtils.toByteArray(totalChunks)
         val crc32Bytes = BLEUtils.crc32ValueToByteArray(crc32Value)
-        val firstHeader: ByteArray = header + headerMessageSize + headerTotalChunks + crc32Bytes + qaulId
+        val firstHeader1: ByteArray = header + largeMessagePart
+        val firstHeader2: ByteArray = firstHeader1 + headerMessageSize
+        val firstHeader3: ByteArray = firstHeader2 + headerTotalChunks
+        val firstHeader4: ByteArray = firstHeader3 + crc32Bytes
+        val firstHeader: ByteArray = firstHeader4 + qaulId
 
         return firstHeader
     }
