@@ -1,0 +1,3 @@
+[submodule "rust/submodules/sig0lease-rust-client"]
+	path = rust/submodules/sig0lease-rust-client
+	url = git@github.com:NetworkCommons/sig0lease-rust-client.git
