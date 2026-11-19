@@ -11,14 +11,25 @@
 //! the first-come-first-served name claim at the SRP server, so it is
 //! persisted and reused across restarts.
 //!
-//! The SRP server is configured in the `srp` section of `config.yaml`.
+//! The SRP server and the registration zone are configured in the `srp`
+//! section of `config.yaml`. Only the configured server is used; there is no
+//! DNS discovery of the registrar.
+//!
+//! Once the event loop runs, the LAN swarm is registered via SRP, see
+//! [`registration`] for the records and [`registrar`] for the task that
+//! keeps them registered.
+
+pub mod registrar;
+pub mod registration;
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use libp2p::Multiaddr;
 use srp_client::SrpKey;
+use tokio::sync::watch;
 
 use crate::storage::configuration::{Configuration, SrpOptions};
 use crate::storage::Storage;
@@ -30,6 +41,8 @@ pub const KEY_FILE_NAME: &str = "srp.pk8";
 pub struct SrpState {
     /// SRP host key, loaded or created on startup.
     key: RwLock<Option<Arc<SrpKey>>>,
+    /// Listen addresses of the LAN swarm, watched by the registrar task.
+    lan_listeners: watch::Sender<Vec<Multiaddr>>,
 }
 
 impl SrpState {
@@ -37,6 +50,7 @@ impl SrpState {
     pub fn new() -> Self {
         Self {
             key: RwLock::new(None),
+            lan_listeners: watch::channel(Vec::new()).0,
         }
     }
 }
@@ -57,13 +71,22 @@ impl Srp {
     /// missing, and loads the SRP host key from the storage folder, creating
     /// and storing a new key if none is present.
     pub fn init(state: &crate::QaulState) {
-        // make sure the SRP options are written to the configuration file
-        let missing = Configuration::get(state).srp.is_none();
-        if missing {
+        // make sure the SRP options are written to the configuration file,
+        // replacing a section from before `zone` existed
+        let outdated = Configuration::get(state)
+            .srp
+            .as_ref()
+            .is_none_or(|srp| srp.zone.is_none());
+        if outdated {
             Configuration::get_mut(state).srp = Some(SrpOptions::default());
             Configuration::save(state);
         }
-        log::info!("SRP server: {}", Self::server(state));
+        let options = Self::options(state);
+        log::info!(
+            "SRP server: {:?}, zone: {:?}",
+            options.server,
+            options.zone.unwrap_or_default()
+        );
 
         // load or create the SRP host key
         let path = Self::key_path(state);
@@ -75,13 +98,64 @@ impl Srp {
         }
     }
 
-    /// Configured SRP server.
-    pub fn server(state: &crate::QaulState) -> String {
-        Configuration::get(state)
+    /// Start the task registering the LAN swarm via SRP.
+    ///
+    /// Needs a running tokio runtime. Does nothing if no server is
+    /// configured, or if the key, the server or the zone are not usable.
+    pub fn spawn_registrar(state: &crate::QaulState) {
+        let options = Self::options(state);
+        if options.server.trim().is_empty() {
+            log::info!("SRP: no server configured, LAN swarm is not registered");
+            return;
+        }
+        let Some(key) = Self::key(state) else {
+            log::error!("SRP: no key, LAN swarm is not registered");
+            return;
+        };
+        let Some((host, port)) = registrar::parse_server(&options.server) else {
+            log::error!("SRP: invalid server {:?}", options.server);
+            return;
+        };
+        let zone_str = options.zone.unwrap_or_default();
+        let zone = match srp_client::model::parse_zone(&zone_str) {
+            Ok(zone) => zone,
+            Err(e) => {
+                log::error!("SRP: invalid zone {:?}: {}", zone_str, e);
+                return;
+            }
+        };
+        let registrar = registrar::Registrar {
+            host,
+            port,
+            zone,
+            peer_id: crate::node::Node::get_id(state),
+            key: key.pkcs8().to_vec(),
+            listeners: state.connections.srp.lan_listeners.subscribe(),
+        };
+        tokio::spawn(registrar.run());
+    }
+
+    /// Report the current listen addresses of the LAN swarm.
+    pub fn set_lan_listeners(state: &crate::QaulState, mut listeners: Vec<Multiaddr>) {
+        listeners.sort();
+        listeners.dedup();
+        state
+            .connections
             .srp
-            .as_ref()
-            .map(|srp| srp.server.clone())
-            .unwrap_or_else(|| SrpOptions::default().server)
+            .lan_listeners
+            .send_if_modified(|current| {
+                if *current == listeners {
+                    return false;
+                }
+                log::debug!("SRP: LAN listen addresses {:?}", listeners);
+                *current = listeners;
+                true
+            });
+    }
+
+    /// Configured SRP options.
+    pub fn options(state: &crate::QaulState) -> SrpOptions {
+        Configuration::get(state).srp.clone().unwrap_or_default()
     }
 
     /// The SRP host key, if it has been loaded.

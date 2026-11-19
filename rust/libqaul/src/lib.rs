@@ -621,6 +621,10 @@ impl Libqaul {
         // config.ble.active flag for its initial status.
         let mut ble_transport = BleTransport::new(&self.state);
 
+        // register the LAN swarm via SRP
+        connections::srp::Srp::set_lan_listeners(&self.state, lan.listeners());
+        connections::srp::Srp::spawn_registrar(&self.state);
+
         // build transport registry
         let mut registry = connections::TransportRegistry::new();
         registry.register(&lan as &dyn Transport);
@@ -784,6 +788,11 @@ impl Libqaul {
                                 if let Some(peer_id) = lan.swarm.behaviour_mut().process_events(&*self.state, behaviour) {
                                     let _ = lan.swarm.disconnect_peer_id(peer_id);
                                 }
+                            }
+                            libp2p::swarm::SwarmEvent::NewListenAddr{..}
+                            | libp2p::swarm::SwarmEvent::ExpiredListenAddr{..}
+                            | libp2p::swarm::SwarmEvent::ListenerClosed{..} => {
+                                connections::srp::Srp::set_lan_listeners(&self.state, lan.listeners());
                             }
                             _ => {}
                         }

@@ -184,16 +184,24 @@ impl Default for Ble {
 
 /// SRP (DNS-SD Service Registration Protocol, RFC 9665) Options
 ///
-/// * `server`: the SRP server to register with
+/// * `server`: the SRP server (registrar) to register with, as `host[:port]`.
+///   The port defaults to 53. Empty disables the registration.
+/// * `zone`: the registration domain the records are registered in.
+///
+/// `zone` is `None` in configuration files written before it existed;
+/// `Srp::init` then replaces the section with the defaults.
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct SrpOptions {
     pub server: String,
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 impl Default for SrpOptions {
     fn default() -> Self {
         SrpOptions {
-            server: "dev.zenr.io".to_string(),
+            server: "sig0lease.dev.zenr.io:8053".to_string(),
+            zone: Some("srp.dev.zenr.io".to_string()),
         }
     }
 }
