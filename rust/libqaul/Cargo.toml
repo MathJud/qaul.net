@@ -72,6 +72,7 @@ qaul_info = { path = "../libp2p_modules/qaul_info" }
 qaul_management = { path = "../libp2p_modules/qaul_management" }
 qaul_messaging = { path = "../libp2p_modules/qaul_messaging" }
 qaul-proto = { path = "../qaul-proto" }
+srp-client = { path = "../submodules/sig0lease-rust-client/srp-client" }
 
 # Linux BLE module
 [target.'cfg(target_os = "linux")'.dependencies]

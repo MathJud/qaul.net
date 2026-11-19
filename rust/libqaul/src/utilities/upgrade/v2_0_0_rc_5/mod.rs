@@ -154,6 +154,7 @@ impl VersionUpgrade {
                 handshake_extras: crate::storage::configuration::HandshakeExtras::default(),
                 crypto_rotation: crate::storage::configuration::CryptoRotation::default(),
                 v2_routing: RoutingV2Options::default(),
+                srp: Some(crate::storage::configuration::SrpOptions::default()),
             };
 
             // save new configuration to file

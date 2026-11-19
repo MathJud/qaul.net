@@ -182,6 +182,22 @@ impl Default for Ble {
     }
 }
 
+/// SRP (DNS-SD Service Registration Protocol, RFC 9665) Options
+///
+/// * `server`: the SRP server to register with
+#[derive(Debug, Deserialize, Clone, Serialize)]
+pub struct SrpOptions {
+    pub server: String,
+}
+
+impl Default for SrpOptions {
+    fn default() -> Self {
+        SrpOptions {
+            server: "dev.zenr.io".to_string(),
+        }
+    }
+}
+
 /// Debugging Configuration Options
 ///
 /// The following options can be configured:
@@ -423,6 +439,10 @@ pub struct Configuration {
     pub crypto_rotation: CryptoRotation,
     #[serde(default)]
     pub v2_routing: RoutingV2Options,
+    /// SRP options. `None` when loaded from a `config.yaml` that predates
+    /// this section; `Srp::init` then writes the defaults to the file.
+    #[serde(default)]
+    pub srp: Option<SrpOptions>,
 }
 
 impl Default for Configuration {
@@ -438,6 +458,7 @@ impl Default for Configuration {
             handshake_extras: HandshakeExtras::default(),
             crypto_rotation: CryptoRotation::default(),
             v2_routing: RoutingV2Options::default(),
+            srp: Some(SrpOptions::default()),
         }
     }
 }

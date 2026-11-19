@@ -12,7 +12,7 @@
 
 use libqaul::storage::configuration::{
     Ble, Configuration, CryptoRotation, DebugOption, HandshakeExtras, Internet, InternetPeer, Lan,
-    Node, RoutingOptions, RoutingV2Options, StorageOptions, UserAccount,
+    Node, RoutingOptions, RoutingV2Options, SrpOptions, StorageOptions, UserAccount,
 };
 use tempfile::TempDir;
 
@@ -57,6 +57,7 @@ fn create_test_config() -> Configuration {
         crypto_rotation: CryptoRotation::default(),
         handshake_extras: HandshakeExtras::default(),
         v2_routing: RoutingV2Options::default(),
+        srp: Some(SrpOptions::default()),
         ble: Ble::default(),
     }
 }

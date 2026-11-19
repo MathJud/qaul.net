@@ -410,6 +410,9 @@ impl Libqaul {
         // This now delegates to qaul_state.node and saves config if needed.
         Node::init(&qaul_state);
 
+        // initialize SRP: load or create the SRP host key
+        connections::srp::Srp::init(&qaul_state);
+
         // Use the QaulState's channel receivers
         let rpc_receiver = qaul_state.rpc.libqaul_receive.clone();
         let sys_receiver = qaul_state.sys.libqaul_receive.clone();

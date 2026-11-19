@@ -9,6 +9,7 @@ pub mod ble;
 pub mod events;
 pub mod internet;
 pub mod lan;
+pub mod srp;
 pub mod transport;
 
 use std::collections::HashMap;
@@ -93,6 +94,8 @@ pub struct ConnectionsState {
     pub ble: ble::BleModuleState,
     /// Consecutive ping failures per neighbour, shared by LAN and Internet.
     pub ping_failures: PingFailureTracker,
+    /// SRP (DNS-SD Service Registration Protocol) state.
+    pub srp: srp::SrpState,
 }
 
 impl ConnectionsState {
@@ -102,6 +105,7 @@ impl ConnectionsState {
             internet: internet::InternetState::new(),
             ble: ble::BleModuleState::new(),
             ping_failures: PingFailureTracker::new(),
+            srp: srp::SrpState::new(),
         }
     }
 }

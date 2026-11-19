@@ -23,4 +23,4 @@ members = [
     # simulation
     "qaul-sim"
 ]
-exclude = ["ble_module"]
+exclude = ["ble_module", "submodules"]
