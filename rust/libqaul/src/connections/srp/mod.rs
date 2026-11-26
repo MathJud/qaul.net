@@ -17,8 +17,10 @@
 //!
 //! Once the event loop runs, the LAN swarm is registered via SRP, see
 //! [`registration`] for the records and [`registrar`] for the task that
-//! keeps them registered.
+//! keeps them registered. The other qaul nodes registered in the zone are
+//! found via DNS-SD and connected to the LAN swarm, see [`browser`].
 
+pub mod browser;
 pub mod registrar;
 pub mod registration;
 
@@ -43,6 +45,8 @@ pub struct SrpState {
     key: RwLock<Option<Arc<SrpKey>>>,
     /// Listen addresses of the LAN swarm, watched by the registrar task.
     lan_listeners: watch::Sender<Vec<Multiaddr>>,
+    /// qaul nodes found in the zone, published by the browser task.
+    lan_peers: watch::Sender<browser::Peers>,
 }
 
 impl SrpState {
@@ -51,6 +55,7 @@ impl SrpState {
         Self {
             key: RwLock::new(None),
             lan_listeners: watch::channel(Vec::new()).0,
+            lan_peers: watch::channel(browser::Peers::new()).0,
         }
     }
 }
@@ -133,6 +138,38 @@ impl Srp {
             listeners: state.connections.srp.lan_listeners.subscribe(),
         };
         tokio::spawn(registrar.run());
+    }
+
+    /// Start the task browsing the zone for other qaul nodes.
+    ///
+    /// Needs a running tokio runtime. Browsing only needs the zone, so it
+    /// also runs when no SRP server is configured. Does nothing if the zone
+    /// is empty or not usable.
+    pub fn spawn_browser(state: &crate::QaulState) {
+        let zone_str = Self::options(state).zone.unwrap_or_default();
+        if zone_str.trim().is_empty() {
+            log::info!("SRP: no zone configured, not browsing for qaul nodes");
+            return;
+        }
+        let zone = match srp_client::model::parse_zone(&zone_str) {
+            Ok(zone) => zone,
+            Err(e) => {
+                log::error!("SRP: invalid zone {:?}: {}", zone_str, e);
+                return;
+            }
+        };
+        let browser = browser::Browser {
+            zone,
+            peer_id: crate::node::Node::get_id(state),
+            peers: state.connections.srp.lan_peers.clone(),
+        };
+        tokio::spawn(browser.run());
+    }
+
+    /// The dialer connecting the LAN swarm to the qaul nodes found in the
+    /// zone.
+    pub fn lan_peers(state: &crate::QaulState) -> browser::LanPeers {
+        browser::LanPeers::new(state.connections.srp.lan_peers.subscribe())
     }
 
     /// Report the current listen addresses of the LAN swarm.

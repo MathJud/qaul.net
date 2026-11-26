@@ -75,6 +75,8 @@ qaul-proto = { path = "../qaul-proto" }
 srp-client = { path = "../submodules/sig0lease-rust-client/srp-client" }
 # DNS names for SRP, same version as srp-client
 hickory-proto = { version = "0.25", default-features = false, features = ["std"] }
+# DNS-SD browsing of other qaul nodes
+hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
 
 # Linux BLE module
 [target.'cfg(target_os = "linux")'.dependencies]

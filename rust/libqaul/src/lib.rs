@@ -624,6 +624,8 @@ impl Libqaul {
         // register the LAN swarm via SRP
         connections::srp::Srp::set_lan_listeners(&self.state, lan.listeners());
         connections::srp::Srp::spawn_registrar(&self.state);
+        // find the other qaul nodes registered via DNS-SD
+        connections::srp::Srp::spawn_browser(&self.state);
 
         // build transport registry
         let mut registry = connections::TransportRegistry::new();
@@ -708,6 +710,7 @@ impl Libqaul {
         // Take a snapshot of the router state once; it doesn't change after init.
         let router = self.state.get_router();
         let mut lan_redial_at: HashMap<PeerId, u64> = HashMap::new();
+        let mut srp_peers = connections::srp::Srp::lan_peers(&self.state);
         loop {
             let evt = {
                 let lan_active = matches!(lan.status(), TransportStatus::Running);
@@ -872,8 +875,15 @@ impl Libqaul {
             };
 
             if let Some(event) = evt {
-                self.handle_event(event, lan, internet, ble, &mut lan_redial_at)
-                    .await;
+                self.handle_event(
+                    event,
+                    lan,
+                    internet,
+                    ble,
+                    &mut lan_redial_at,
+                    &mut srp_peers,
+                )
+                .await;
             }
         }
     }
@@ -886,6 +896,7 @@ impl Libqaul {
         internet: &mut connections::internet::Internet,
         ble: &mut BleTransport,
         lan_redial_at: &mut std::collections::HashMap<libp2p::PeerId, u64>,
+        srp_peers: &mut connections::srp::browser::LanPeers,
     ) {
         /// Minimum gap between LAN redial attempts for the same peer.
         const LAN_REDIAL_INTERVAL_MS: u64 = 5_000;
@@ -1076,6 +1087,9 @@ impl Libqaul {
                         log::debug!("lan redial: {peer:?} is discovered but not connected");
                         let _ = lan.swarm.dial(peer);
                     }
+
+                    // qaul nodes registered via DNS-SD
+                    srp_peers.connect(&mut lan.swarm, now);
                 }
             }
             EventType::RoutingTable => {
